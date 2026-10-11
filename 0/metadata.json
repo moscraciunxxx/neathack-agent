@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4MQM8EEPPTST33HMDNKMJP1",
+  "session_id": "4a17c2ce-640f-4104-8cc5-692bb82052ae",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-11T05:40:32.46325Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "CLAUDE.md"
+  ],
+  "agent": "Cursor",
+  "model": "default",
+  "turn_id": "2e00bc9c21eb",
+  "checkpoint_transcript_start": 58,
+  "transcript_lines_at_start": 58,
+  "compact_transcript_start": 14,
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-11T05:40:32.457159Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 0,
+    "total_lines_changed": 0,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 12,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "AGENTS.md": 6,
+        "CLAUDE.md": 6
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+Pull latest main, then add a CHANGELOG.md summarizing today's features (web app, recover/broaden, market-fit verify, outreach drafts, cfo.ai pricing). Commit and push.
+
+---
+
+Enable Entire Graph' and push. Then use entire-graph search to explain where the recover/broaden logic lives.
+Commit .entire/graph-agent.md, AGENTS.md and CLAUDE.md with message "Enable Entire Graph" and push. Then use entire-graph search to explain where the recover and broaden logic lives in this repo.
