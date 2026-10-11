@@ -40,7 +40,12 @@ CRUST_BASE = "https://api.crustdata.com"
 CRUST_VERSION = "2025-11-01"
 MAX_JOBS = 10      # job/search: 0.03 credits per result
 MAX_PEOPLE = 5     # person/search: ~0.03-0.13 credits per result (basic fields)
-MAX_PEOPLE_COMPANIES = 3
+MAX_PEOPLE_COMPANIES = 3          # standard mode
+MAX_PEOPLE_COMPANIES_DEEP = 15    # deep mode: every ranked company, still bounded by --max-credits
+PEOPLE_STATUS_LABEL = {"found": "found", "none_found": "none found",
+                       "not_looked_up_budget": "not looked up (credit budget)",
+                       "not_looked_up_no_spend": "not looked up (no-spend, not cached)",
+                       "not_looked_up_limit": "not looked up (standard mode: top 3 only)"}
 DEEP_TOP_N_DEFAULT = 5
 DEFAULT_MAX_CREDITS = 15.0
 # Estimated list prices (docs.crustdata.com/general/pricing): search 0.03/result, enrich 2/company
@@ -111,7 +116,7 @@ def _is_transient(e: Exception) -> bool:
     return code in (429, 500, 502, 503, 504)
 
 
-def _generate_json(model: str, prompt: str) -> dict:
+def _generate_json(model: str, prompt: str, temperature: float = 0.2) -> dict:
     if SIMULATE["remaining"] > 0:
         SIMULATE["remaining"] -= 1
         with neatlogs.trace("SIMULATED_gemini_503", kind="CHAIN") as span:
@@ -124,13 +129,13 @@ def _generate_json(model: str, prompt: str) -> dict:
         model=model,
         contents=prompt,
         config=types.GenerateContentConfig(
-            response_mime_type="application/json", temperature=0.2
+            response_mime_type="application/json", temperature=temperature
         ),
     )
     return json.loads(resp.text)
 
 
-def ask_json(prompt: str) -> dict:
+def ask_json(prompt: str, temperature: float = 0.2) -> dict:
     """Gemini call that must return JSON.
     Main model: up to len(RETRY_DELAYS)+1 attempts with backoff on 429/5xx or bad JSON,
     then the same on FALLBACK_MODEL. Raises RuntimeError if everything fails."""
@@ -140,7 +145,7 @@ def ask_json(prompt: str) -> dict:
             recover_event("fallback_model", from_model=MODEL, to_model=model, reason=last_err)
         for attempt in range(len(RETRY_DELAYS) + 1):
             try:
-                return _generate_json(model, prompt)
+                return _generate_json(model, prompt, temperature)
             except (json.JSONDecodeError, TypeError) as e:
                 last_err = f"bad JSON: {e}"
             except genai_errors.APIError as e:
@@ -373,7 +378,8 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
     'condition_eliminates_all' remarks that suggest a resolved company_id."""
     cur = "experience.employment_details.current."
     cached = None if dry_run else entity_get("people", company.get("company_id"))
-    if cached:
+    if cached is not None:
+        company["people_status"] = "found" if cached else "none_found"
         state["steps"].append({"tool": "people_search", "by": "entity_cache",
                                "company": company.get("name"), "results": len(cached), "credits": 0})
         return cached
@@ -387,13 +393,17 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
     if company.get("name"):
         attempts.append(("name", {"field": cur + "company_name", "type": "in",
                                   "value": [company["name"]]}))
+    company["people_status"] = "none_found"
+    skipped = 0
     for how, cond in attempts:
         if not dry_run and not within_budget("people"):
+            company["people_status"] = "not_looked_up_budget"
             return []
         try:
             res = people_search_once(cond, titles, dry_run, company.get("domain") or "")
         except NoSpendSkip as e:
             state["steps"].append({"tool": "people_search", "by": how, "skipped": str(e)})
+            skipped += 1
             continue
         except Exception as e:  # noqa: BLE001
             state["steps"].append({"tool": "people_search", "by": how, "error": str(e)})
@@ -403,6 +413,7 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
         state["steps"].append({"tool": "people_search", "by": how, "company": company.get("name"),
                                "results": len(profiles), "credits": res.get("_credits_used")})
         if profiles:
+            company["people_status"] = "found"
             if not dry_run:
                 entity_put("people", company.get("company_id"), profiles)
             return profiles
@@ -413,6 +424,10 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
                                               "value": resol["value"]}))
         if how != attempts[-1][0]:
             recover_event("people_search_broaden", company=company.get("name"), empty_by=how)
+    if skipped == len(attempts):
+        company["people_status"] = "not_looked_up_no_spend"
+    elif not dry_run and company["people_status"] == "none_found" and not skipped:
+        entity_put("people", company.get("company_id"), [])  # cache "none found" too: 0 credits on rerun
     return []
 
 
@@ -422,7 +437,8 @@ def company_enrich(ids: list, dry_run: bool) -> dict:
     if dry_run:
         return {"_credits_used": "0 (mock)", "results": [
             {"matched_on": str(i), "matches": [{"company_data": {
-                "crustdata_company_id": i, "basic_info": {"name": f"Mock {i}"},
+                "crustdata_company_id": i, "basic_info": {"name": f"Mock {i}", "industries": ["AI infrastructure"],
+                                                           "description": "GPU inference platform (mock)"},
                 "headcount": {"total": 80 + i, "growth_percent": {"six_months": 12.5, "yoy": 40.0}},
                 "funding": {"total_investment_usd": 20000000.0, "last_round_type": "series_a",
                             "last_fundraise_date": "2026-03-01", "last_round_amount_usd": 15000000.0}}}]}
@@ -494,27 +510,52 @@ def _normalize_dropped(items) -> list:
     return out
 
 
-@neatlogs.span(kind="AGENT", name="verifier", role="Soft verify: drop only missing sources")
-def verify(market: str, role: str, companies: list) -> dict:
-    prompt = f"""You are a fact checker. Market: "{market}". Role: "{role}".
-Below is raw Crustdata evidence per company (job postings with URLs, people with profile URLs,
-optional firmographics with company_id).
-Write a ranked list of companies most relevant to the market and role.
-Rules: every claim should cite a source URL or company_id from that company's evidence.
-Keep a claim if its source URL or company_id appears anywhere in the Crustdata results for
-that company. Only drop claims whose source is missing entirely — for each dropped item
-include the reason. Do not invent companies, people, or URLs.
+FIT_CACHE_FILE = RUNS_DIR / "fit_cache.json"
 
-Return JSON: {{"companies": [{{"name": str, "domain": str, "rank": int, "why": str,
+
+def _fit_key(market: str, role: str, c: dict) -> str:
+    return f"{plan_key(market, role)}|{c.get('company_id') or c.get('domain') or c.get('name')}"
+
+
+def _fit_view(c: dict) -> dict:
+    """Compact per-company view for the market-fit judgment."""
+    return {"name": c.get("name"), "domain": c.get("domain"), "company_id": c.get("company_id"),
+            "headcount": c.get("headcount"), "last_round": c.get("last_round"),
+            "job_titles": [j.get("title") for j in c.get("jobs", [])][:5],
+            "profile": c.get("profile") or "n/a (no enrich data: judge from name, domain, job titles)"}
+
+
+@neatlogs.span(kind="AGENT", name="verifier", role="Market-fit judgment + source check, temperature 0")
+def verify(market: str, role: str, companies: list, refit: bool = False, dry_run: bool = False) -> dict:
+    fit_cache = {} if refit else _read_json(FIT_CACHE_FILE)
+    known = {c.get("name"): fit_cache[_fit_key(market, role, c)] for c in companies
+             if _fit_key(market, role, c) in fit_cache}
+    prompt = f"""You are a strict fact checker. Market: "{market}". Role: "{role}".
+
+STEP 1, market fit: for EVERY company in COMPANY PROFILES give an explicit judgment whether the
+company itself (its product/industry, not just the job title) belongs to the market "{market}".
+Use the profile (industries/description) when present; otherwise name, domain and job titles.
+A company that only hires for the role but sells into an unrelated industry is NOT a fit.
+If unsure, fit=false with reason "insufficient evidence".
+
+STEP 2, claims: for companies with fit=true, write a ranked list. Every claim must cite a source
+URL or company_id from that company's evidence. Keep a claim if its source appears in that
+company's evidence; drop claims with no source (with reason). Do not invent companies, people or URLs.
+
+Return JSON: {{"market_fit": [{{"name": str, "fit": bool, "reason": str}}],
+"companies": [{{"name": str, "domain": str, "rank": int, "why": str,
 "claims": [{{"text": str, "source": str}}],
 "decision_makers": [{{"name": str, "title": str, "source": str}}]}}],
 "dropped": [{{"text": str, "reason": str}}]}}
+
+COMPANY PROFILES:
+{json.dumps([_fit_view(c) for c in companies], indent=1)[:12000]}
 
 EVIDENCE:
 {json.dumps(companies, indent=1)[:30000]}
 """
     try:
-        out = ask_json(prompt)
+        out = ask_json(prompt, temperature=0)
         out["llm_verify"] = True
     except RuntimeError as e:
         recover_event("verify_code_only", reason=e)
@@ -524,6 +565,25 @@ EVIDENCE:
     # keep if source URL or company_id appears in THAT company's Crustdata results;
     # only hard-drop when source is missing entirely.
     dropped = _normalize_dropped(out.get("dropped"))
+    # Market fit: earlier verdict for this market+role+company wins (stable across reruns);
+    # new verdicts are cached. Off-market companies are removed with their reason.
+    fits = {f.get("name"): f for f in out.get("market_fit") or [] if isinstance(f, dict)}
+    out["market_fit"] = []
+    for c in companies:
+        f = known.get(c.get("name")) or fits.get(c.get("name"))
+        if not f:
+            continue
+        f = {"name": c.get("name"), "fit": bool(f.get("fit")), "reason": f.get("reason") or ""}
+        out["market_fit"].append(f)
+        if out.get("llm_verify") and c.get("name") not in known:
+            fit_cache[_fit_key(market, role, c)] = f
+    if out.get("llm_verify") and fit_cache and not dry_run:
+        _write_json(FIT_CACHE_FILE, {**_read_json(FIT_CACHE_FILE), **fit_cache})
+    off = {f["name"] for f in out["market_fit"] if not f["fit"]}
+    for f in out["market_fit"]:
+        if not f["fit"]:
+            dropped.append({"text": f"{f['name']} (whole company)", "reason": f"off-market: {f['reason']}"})
+    out["companies"] = [c for c in out.get("companies", []) if c.get("name") not in off]
     for c in out.get("companies", []):
         ev = _evidence_company(c, companies)
         keep = []
@@ -598,6 +658,12 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
             lines.append("**Decision-makers:**")
             for d in c["decision_makers"]:
                 lines.append(f"- {d['name']}, {d['title']} [profile]({d['source']})")
+        else:
+            st = (result.get("_people_status") or {}).get(c.get("name"), "none_found")
+            lines.append(f"**Decision-makers:** {PEOPLE_STATUS_LABEL.get(st, st)}")
+        fit = next((f for f in result.get("market_fit") or [] if f["name"] == c.get("name")), None)
+        if fit:
+            lines.append(f"_Market fit: {fit['reason']}_")
         lines.append("")
     if result.get("_credits"):
         lines.append(f"_Crustdata credits this run: estimated {result['_credits'][0]:.2f}, "
@@ -620,7 +686,7 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
     reset_run_counters()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     state = {"market": market, "role": role, "dry_run": dry_run, "deep": deep, "model": MODEL, "steps": []}
-    planned = EST["job"] + EST["people"] * MAX_PEOPLE_COMPANIES + (EST["enrich"] * deep_n if deep else 0)
+    planned = EST["job"] + EST["people"] * (MAX_PEOPLE_COMPANIES_DEEP if deep else MAX_PEOPLE_COMPANIES) + (EST["enrich"] * deep_n if deep else 0)
     emit("info", f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
 
     pk = plan_key(market, role)
@@ -665,10 +731,14 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                           "location": j.get("location", {}).get("raw"),
                           "posted": j.get("metadata", {}).get("date_added")})
 
-    emit("tools", f"3/5 finding decision-makers at top {MAX_PEOPLE_COMPANIES} companies...")
     titles = list(dict.fromkeys((p.get("decision_maker_titles") or []) + DEFAULT_DM_TITLES))[:6]
     ranked = sorted(companies.values(), key=lambda c: -len(c["jobs"]))
-    for c in ranked[:MAX_PEOPLE_COMPANIES]:
+    n_people = MAX_PEOPLE_COMPANIES_DEEP if deep else MAX_PEOPLE_COMPANIES
+    emit("tools", f"3/5 finding decision-makers at top {min(n_people, len(ranked))} of {len(ranked)} companies "
+                  f"(credit cap {CREDITS['max']}, entity cache first)...")
+    for c in ranked[n_people:]:
+        c["people_status"] = "not_looked_up_limit"
+    for c in ranked[:n_people]:
         for pr in people_search(c, titles, dry_run, state):
             pid = pr.get("crustdata_person_id")
             url = ((pr.get("social_handles") or {}).get("professional_network_identifier") or {}).get("profile_url")
@@ -706,6 +776,11 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                     if not d:
                         continue
                     hc, fu = d.get("headcount") or {}, d.get("funding") or {}
+                    bi = d.get("basic_info") or {}
+                    prof = {k: bi.get(k) for k in ("industries", "description", "short_description",
+                                                   "categories", "markets", "year_founded") if bi.get(k)}
+                    if prof:
+                        c["profile"] = {**prof, "source": f"Crustdata /company/enrich (company_id {c['company_id']})"}
                     c["firmographics"] = {
                         "source": f"Crustdata /company/enrich (company_id {c['company_id']})",
                         "headcount": hc.get("total"),
@@ -726,7 +801,7 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                   f"{sum(len(c['people']) for c in ranked)} people, credits so far {CREDITS['spent']:.2f}")
 
     emit("verify", "4/5 verifying claims with Gemini...")
-    result = verify(market, role, ranked) if ranked else {"companies": [], "dropped": []}
+    result = verify(market, role, ranked, refit=replan, dry_run=dry_run) if ranked else {"companies": [], "dropped": []}
     state["result"] = result
     state["recovery_events"] = RECOVERY_LOG
     state["credits_spent"] = round(CREDITS["spent"], 3)
@@ -734,6 +809,7 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
     state["credits_skipped_by_cap"] = CREDITS["skipped"]
     state["cache_stats"] = dict(CACHE_STATS)
     state["no_spend"] = NO_SPEND["on"]
+    result["_people_status"] = {c["name"]: c.get("people_status", "none_found") for c in ranked}
     result["_firmo"] = {c["name"]: c["firmographics"] for c in ranked if c.get("firmographics")}
     result["_credits"] = (state["credits_estimated"], state["credits_spent"])
 

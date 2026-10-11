@@ -79,10 +79,10 @@
       <div class="meter" id="meter">
         <div class="kpi"><b>–</b><span>Crustdata credits spent</span></div>
         <div class="kpi"><b>–</b><span>Cache hits</span></div>
-        <div class="kpi"><b>–</b><span>Est. cost (COGS)</span></div>
-        <div class="kpi"><b>–</b><span>Price · margin</span></div>
+        <div class="kpi"><b>–</b><span>COGS this run (base $0.10/credit)</span></div>
+        <div class="kpi"><b>–</b><span>PAYG price · gross margin</span></div>
       </div>
-      <div class="note" id="meternote">Credit $ is an assumption ($0.10/credit). See docs/unit-economics.md.</div>
+      <div class="note" id="meternote">Pricing from cfo.ai plan. See docs/unit-economics.md.</div>
     </div>
   </div>
   <div>
@@ -135,7 +135,10 @@ function meter(e){
   k[1].textContent = `${(c.hits||0)+(c.entity_hits||0)} · ${c.misses||0} paid`;
   k[2].textContent = `$${e.cogs_usd.toFixed(2)}`;
   k[3].textContent = `$${e.price_usd} · ${e.margin_pct}%`;
-  $('#meternote').innerHTML = `${e.kind} report: Crustdata $${e.crustdata_usd.toFixed(2)} (at $${e.credit_usd_assumption}/credit, assumption) + LLM ~$${e.llm_usd} at paid-tier rates. ${(c.skipped_no_spend||0)} call(s) skipped by no-spend. ${esc(e.full_cost_note)}`;
+  $('#meternote').innerHTML = `<b>${e.kind}</b> report (PAYG $${e.price_usd}): Crustdata $${e.crustdata_usd.toFixed(2)} at $${e.credit_usd_assumption}/credit + LLM ~$${e.llm_usd} (paid-tier). `
+    + `Downside ($${e.credit_usd_downside}/credit): COGS $${e.cogs_downside_usd.toFixed(2)}, margin ${e.margin_downside_pct}%. `
+    + (e.kind === 'deep' ? `cfo.ai downside floor for 80% GM on deep: $${e.deep_floor_80pct} from Jan 2027. ` : '')
+    + `${(c.skipped_no_spend||0)} call(s) skipped by no-spend. ${esc(e.full_cost_note)}<br>Plans: ${esc(e.plans)}.`;
 }
 function render(r){
   runId = r.run_id;
@@ -150,7 +153,8 @@ function render(r){
       <div class="why">${esc(c.why)}</div>
       ${c.headcount||c.last_round ? `<span class="pill">headcount ${esc(c.headcount ?? 'n/a')}</span><span class="pill">${esc(c.last_round ?? 'round n/a')}</span>` : ''}
       <h4>Open roles</h4><ul>${c.jobs.map(j => `<li>${link(j.url, j.title)} <span class="dom">${esc(j.location||'')}</span></li>`).join('') || '<li class="dom">none cited</li>'}</ul>
-      <h4>Decision-makers</h4><ul>${c.people.map(p => `<li>${link(p.source, p.name)} <span class="dom">${esc(p.title||'')}</span></li>`).join('') || '<li class="dom">none found</li>'}</ul>
+      <h4>Decision-makers</h4><ul>${c.people.map(p => `<li>${link(p.source, p.name)} <span class="dom">${esc(p.title||'')}</span></li>`).join('') || `<li class="dom">${esc(c.people_label || 'none found')}</li>`}</ul>
+      ${c.market_fit ? `<div class="dom" style="margin-top:8px">Market fit: ${esc(c.market_fit)}</div>` : ''}
       ${f ? `<h4>Firmographics</h4><div><span class="pill">headcount ${esc(f.headcount ?? 'n/a')}</span><span class="pill">6m ${pct(f.headcount_growth_6m_pct)}</span><span class="pill">YoY ${pct(f.headcount_growth_yoy_pct)}</span><span class="pill">raised ${fm(f.funding_total_usd)}</span><span class="pill">${esc(f.last_round_type||'')} ${fm(f.last_round_amount_usd)} ${esc(f.last_fundraise_date||'')}</span></div><div class="dom">source: ${esc(f.source)}</div>` : ''}
     </div>`; }).join('') : '<div class="panel empty">No verified companies.</div>';
   const dr = r.dropped || [];

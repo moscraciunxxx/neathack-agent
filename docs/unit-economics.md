@@ -34,14 +34,16 @@ LLM $/run at 2027 rates: 12k × $1.50/1M + 4k × $7.50/1M ≈ $0.05. We budget *
 
 Biggest lever: company enrich (10 of the 12.12 credits). The per-company cache means repeat markets cost close to nothing.
 
-## 4. Proposed pricing (A)
+## 4. Pricing (updated after the cfo.ai run, see section 7)
 
 | Plan | Price | Includes | COGS at 100% use | GM at 100% use | GM at 50% use (A) |
 |---|---|---|---|---|---|
 | Pay-per-report: standard | $3 | 1 report | $0.13 | 96% | — |
 | Pay-per-report: deep | $12 | 1 deep report | $1.31 | 89% | — |
-| Starter | $149/mo | 30 deep + 150 standard | $58.80 | 61% | ~80% |
-| Team | $499/mo | 120 deep + 600 standard | $235.20 | 53% | ~76% |
+| Starter | $149/mo | **150 standard + 7 deep** | $28.67 | 81% | ~90% |
+| Team | $499/mo | **600 standard + 18 deep** | $101.58 | 80% | ~90% |
+
+The original allowances (30 / 120 deep) gave 53–61% GM at full use. Following cfo.ai, deep reports in plans were cut to 7 / 18 (allowance cut). Deep pay-as-you-go stays at **$12**. Note: cfo.ai's downside **floor for 80% GM on deep is $12.62 from Jan 2027**, so $12 is slightly below it in the downside case. Plan to raise deep PAYG to ~$13 if credit cost moves toward $0.20.
 
 Positioning: one deep report replaces about an hour of a recruiter's or SDR's manual research (worth $40–80 at $40–80/h, A). That makes $12 an easy buy and leaves room for future price increases.
 
@@ -87,3 +89,15 @@ cfo.ai's product is **Ari**, a personal-CFO agent: "Ask a question. Ari builds t
 7. **Proof for judges:** screenshot or record the plan table, the scenario chart and the margin answer. Save the workspace share link if Ari offers one. Add the link and screenshots to the README and the submission post.
 
 Note: the cfo.ai UI wording above is from its public page. If menus differ, the prompts in steps 3–6 are what matter.
+
+## 7. cfo.ai results (from the user's cfo.ai/Ari session, Oct 2026)
+
+| Item | Result |
+|---|---|
+| Crustdata $/credit | base **$0.10**, downside **$0.20** |
+| Plans | Starter **$149/mo** = 150 standard + 7 deep; Team **$499/mo** = 600 standard + 18 deep |
+| Deep pay-as-you-go | **$12** (cfo.ai downside floor for 80% GM: **$12.62 from Jan 2027**, when Gemini paid prices double) |
+| Ending cash, month 12 | base **$25.4k**; downside **$13.9k** (after the deep-allowance cut) |
+| Downside full-year gross margin | **76.3%** |
+
+Takeaways: the business stays cash-positive in both scenarios. The risk is margin, not runway. Deep reports drive COGS (enrich = 10 of 12.12 credits), so allowances are kept small, and caching makes repeat markets close to free. These numbers are shown live in the demo app's cost meter: base and downside COGS/margin per run, plan prices, and the $12.62 floor.

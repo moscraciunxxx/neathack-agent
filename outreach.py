@@ -7,6 +7,7 @@ fallback if Gemini is unavailable. Nothing is ever sent: drafts are for copy/pas
 """
 import hashlib
 import json
+import re
 from datetime import date, datetime
 
 import neatlogs
@@ -88,9 +89,28 @@ def build_inputs(cards: list) -> list:
     return out[:MAX_PEOPLE]
 
 
-def _trim(body: str) -> str:
+SIGNATURE = "Best,\n<your name>"
+_SIGNOFF = re.compile(r"^\s*(best|best regards|kind regards|warm regards|regards|thanks|thank you|many thanks|"
+                      r"cheers|sincerely|warmly|all the best|talk soon)\b[^\n]{0,20}$", re.I | re.M)
+
+
+def _finish(body: str) -> str:
+    """Strip any LLM sign-off / invented sender name, cap words, append the exact placeholder."""
+    body = (body or "").replace("\r", "").strip()
+    m = None
+    for m in _SIGNOFF.finditer(body):
+        pass
+    if m and m.start() > len(body) * 0.4:
+        body = body[:m.start()]
+    body = re.sub(r"\n?\s*(<your name>|\[your name\])\s*$", "", body.strip(), flags=re.I).rstrip()
     words = body.split(" ")
-    return body if len(words) <= MAX_WORDS else " ".join(words[:MAX_WORDS]).rstrip(",.;") + "…"
+    if len(words) > MAX_WORDS - 3:
+        body = " ".join(words[:MAX_WORDS - 3]).rstrip(",.;") + "…"
+    return f"{body}\n\n{SIGNATURE}"
+
+
+def _trim(body: str) -> str:
+    return _finish(body)
 
 
 def template_email(x: dict, role: str) -> dict:
@@ -118,7 +138,7 @@ def draft(cards: list, role: str) -> dict:
     inputs = build_inputs(cards)
     if not inputs:
         return {"emails": [], "mode": "none", "note": "No decision-makers with cited facts on the cards."}
-    key = hashlib.sha256(json.dumps(["v2", role, inputs], sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps(["v3", role, inputs], sort_keys=True).encode()).hexdigest()
     cache = agent._read_json(OUTREACH_CACHE)
     if key in cache:
         agent.emit("tools", "  (outreach cache hit, 0 LLM calls)")
@@ -131,7 +151,8 @@ Rules:
 - Lead with that person's "hook" fact (it differs per person) and start with their suggested "opener"
   phrase or a close variant; no two emails may share the same first sentence.
 - Mention one other fact at most (e.g. the specific open role title). Reference their title naturally.
-- Max {MAX_WORDS} words in the body, one clear ask, sign off exactly "Best,\\n<your name>".
+- Max {MAX_WORDS} words in the body, one clear ask. End with exactly "Best,\\n<your name>".
+  NEVER write a sender name (no "Alex", no "Jordan", no company name for the sender).
 - "sources": copy verbatim the source of every fact you used.
 Return JSON: {{"emails": [{{"id": str, "subject": str, "body": str, "sources": [str]}}]}}
 
