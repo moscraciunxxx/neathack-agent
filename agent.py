@@ -41,6 +41,13 @@ CRUST_VERSION = "2025-11-01"
 MAX_JOBS = 10      # job/search: 0.03 credits per result
 MAX_PEOPLE = 5     # person/search: ~0.03-0.13 credits per result (basic fields)
 MAX_PEOPLE_COMPANIES = 3
+DEEP_TOP_N_DEFAULT = 5
+DEFAULT_MAX_CREDITS = 15.0
+# Estimated list prices (docs.crustdata.com/general/pricing): search 0.03/result, enrich 2/company
+EST = {"job": 0.03 * 10, "people": 0.03 * 5, "enrich": 2.0}
+SENIORITY = ["CXO", "Vice President", "Director", "Owner / Partner"]
+DEFAULT_DM_TITLES = ["CTO", "VP Engineering", "Head of Engineering", "Founder", "CEO"]
+CREDITS = {"spent": 0.0, "estimated": 0.0, "max": DEFAULT_MAX_CREDITS, "skipped": []}
 RUNS_DIR = Path(__file__).parent / "runs"
 CACHE_FILE = RUNS_DIR / "crustdata_cache.json"
 RECOVERY_LOG = []  # retry/fallback events, saved into run state
@@ -150,6 +157,10 @@ def _crust_post(path: str, body: dict) -> dict:
         out["_credits_used"] = "0 (cached)"
         return out
     out = _crust_post_live(path, body)
+    try:
+        CREDITS["spent"] += float(out.get("_credits_used") or 0)
+    except ValueError:
+        pass
     cache[ck] = out
     RUNS_DIR.mkdir(exist_ok=True)
     CACHE_FILE.write_text(json.dumps(cache))
@@ -176,8 +187,22 @@ def _crust_post_live(path: str, body: dict) -> dict:
     if r.status_code >= 400:
         raise RuntimeError(f"Crustdata {path} {r.status_code}: {r.text[:300]}")
     out = r.json()
+    if isinstance(out, list):  # /company/enrich returns a JSON array
+        out = {"results": out}
     out["_credits_used"] = r.headers.get("X-Credits-Used")
     return out
+
+
+def within_budget(kind: str, n: int = 1) -> bool:
+    """Credit cap: skip a paid call if the running estimate would exceed --max-credits."""
+    cost = EST[kind] * n
+    if CREDITS["estimated"] + cost > CREDITS["max"]:
+        CREDITS["skipped"].append(f"{kind} x{n} (est {cost:.2f})")
+        recover_event("credit_cap_skip", kind=kind, est=round(cost, 2),
+                      so_far=round(CREDITS["estimated"], 2), cap=CREDITS["max"])
+        return False
+    CREDITS["estimated"] += cost
+    return True
 
 
 def build_job_filters(p: dict, level: int) -> dict:
@@ -227,24 +252,89 @@ def job_search(filters: dict, dry_run: bool) -> dict:
     })
 
 
+PEOPLE_FIELDS = ["crustdata_person_id", "basic_profile.name", "basic_profile.current_title",
+                 "social_handles.professional_network_identifier.profile_url"]
+
+
+def _people_filters(company_cond: dict, titles: list) -> dict:
+    """Current employer = company AND (senior level OR a decision-maker title)."""
+    role_conds = [{"field": "experience.employment_details.current.seniority_level",
+                   "type": "in", "value": SENIORITY}]
+    for t in titles:
+        role_conds.append({"field": "experience.employment_details.current.title",
+                           "type": "(.)", "value": t})
+    return {"op": "and", "conditions": [company_cond, {"op": "or", "conditions": role_conds}]}
+
+
 @neatlogs.span(kind="TOOL", tool_name="crustdata_person_search",
-               description="POST /person/search on Crustdata, decision-makers at one company")
-def people_search(domain: str, titles: list, dry_run: bool) -> dict:
+               description="POST /person/search: decision-makers currently at one company")
+def people_search_once(company_cond: dict, titles: list, dry_run: bool, domain: str = "") -> dict:
     if dry_run:
-        return mock_people(domain)
-    return _crust_post("/person/search", {
-        "filters": {"op": "and", "conditions": [
-            {"field": "experience.employment_details.current.company_website_domain",
-             "type": "=", "value": domain},
-            {"op": "or", "conditions": [
-                {"field": "experience.employment_details.current.title", "type": "(.)", "value": t}
-                for t in titles
-            ]},
-        ]},
-        "fields": ["crustdata_person_id", "basic_profile.name", "basic_profile.current_title",
-                   "social_handles.professional_network_identifier.profile_url"],
-        "limit": MAX_PEOPLE,
-    })
+        return mock_people(domain or "company.example")
+    body = {"filters": _people_filters(company_cond, titles), "fields": PEOPLE_FIELDS,
+            "limit": MAX_PEOPLE}
+    try:
+        return _crust_post("/person/search", body)
+    except RuntimeError as e:
+        if "Invalid fields" in str(e):  # field-path drift: retry with default fields
+            recover_event("people_fields_fallback", error=str(e)[:200])
+            body.pop("fields")
+            return _crust_post("/person/search", body)
+        raise
+
+
+@neatlogs.span(kind="CHAIN", name="find_decision_makers_with_recovery")
+def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> list:
+    """Try company_id (exact) -> website domain -> company name. Follows Crustdata
+    'condition_eliminates_all' remarks that suggest a resolved company_id."""
+    cur = "experience.employment_details.current."
+    attempts = []
+    if company.get("company_id"):
+        attempts.append(("company_id", {"field": cur + "company_id", "type": "in",
+                                        "value": [company["company_id"]]}))
+    if company.get("domain"):
+        attempts.append(("domain", {"field": cur + "company_website_domain", "type": "=",
+                                    "value": company["domain"]}))
+    if company.get("name"):
+        attempts.append(("name", {"field": cur + "company_name", "type": "in",
+                                  "value": [company["name"]]}))
+    for how, cond in attempts:
+        if not dry_run and not within_budget("people"):
+            return []
+        try:
+            res = people_search_once(cond, titles, dry_run, company.get("domain") or "")
+        except Exception as e:  # noqa: BLE001
+            state["steps"].append({"tool": "people_search", "by": how, "error": str(e)})
+            recover_event("people_search_error", company=company.get("name"), by=how, error=str(e)[:200])
+            continue
+        profiles = res.get("profiles", [])
+        state["steps"].append({"tool": "people_search", "by": how, "company": company.get("name"),
+                               "results": len(profiles), "credits": res.get("_credits_used")})
+        if profiles:
+            return profiles
+        for rm in res.get("remarks") or []:
+            resol = (rm or {}).get("resolution") or {}
+            if resol.get("field") and resol.get("value") and how != "resolved":
+                attempts.append(("resolved", {"field": resol["field"], "type": "in",
+                                              "value": resol["value"]}))
+        if how != attempts[-1][0]:
+            recover_event("people_search_broaden", company=company.get("name"), empty_by=how)
+    return []
+
+
+@neatlogs.span(kind="TOOL", tool_name="crustdata_company_enrich",
+               description="POST /company/enrich (headcount + funding), ~2 credits/company")
+def company_enrich(ids: list, dry_run: bool) -> dict:
+    if dry_run:
+        return {"_credits_used": "0 (mock)", "results": [
+            {"matched_on": str(i), "matches": [{"company_data": {
+                "crustdata_company_id": i, "basic_info": {"name": f"Mock {i}"},
+                "headcount": {"total": 80 + i, "growth_percent": {"six_months": 12.5, "yoy": 40.0}},
+                "funding": {"total_investment_usd": 20000000.0, "last_round_type": "series_a",
+                            "last_fundraise_date": "2026-03-01", "last_round_amount_usd": 15000000.0}}}]}
+            for i in ids]}
+    return _crust_post("/company/enrich", {"crustdata_company_ids": ids,
+                                           "fields": ["basic_info", "headcount", "funding"]})
 
 
 # ------------------------------------------------------------- RECOVER -----
@@ -253,6 +343,8 @@ def gather_jobs(p: dict, state: dict, dry_run: bool) -> list:
     for level in range(3):
         filters = build_job_filters(p, level)
         step = {"tool": "job_search", "level": level, "filters": filters}
+        if not dry_run and not within_budget("job"):
+            break
         try:
             res = job_search(filters, dry_run)
             jobs = res.get("job_listings", [])
@@ -346,11 +438,22 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
         lines.append(c.get("why", ""))
         for cl in c["claims"]:
             lines.append(f"- {cl['text']} [source]({cl['source']})")
+        f = (result.get("_firmo") or {}).get(c.get("name"))
+        if f:
+            def m(v):
+                return f"${v/1e6:.1f}M" if isinstance(v, (int, float)) else "n/a"
+            lines.append(f"**Firmographics** ({f['source']}): headcount {f['headcount']}, "
+                         f"growth 6m {f['headcount_growth_6m_pct']}% / YoY {f['headcount_growth_yoy_pct']}%, "
+                         f"total funding {m(f['funding_total_usd'])}, last round {f['last_round_type']} "
+                         f"{m(f['last_round_amount_usd'])} on {f['last_fundraise_date']}")
         if c["decision_makers"]:
             lines.append("**Decision-makers:**")
             for d in c["decision_makers"]:
                 lines.append(f"- {d['name']}, {d['title']} [profile]({d['source']})")
         lines.append("")
+    if result.get("_credits"):
+        lines.append(f"_Crustdata credits this run: estimated {result['_credits'][0]:.2f}, "
+                     f"actual {result['_credits'][1]:.2f}._")
     if result.get("dropped"):
         lines.append(f"_Dropped {len(result['dropped'])} unsupported claim(s) during verification._")
     return "\n".join(lines)
@@ -358,10 +461,12 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
 
 # ------------------------------------------------------------- WORKFLOW ----
 @neatlogs.span(kind="WORKFLOW", name="hiring_signal_scout")
-def run(market: str, role: str, dry_run: bool) -> str:
+def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int = DEEP_TOP_N_DEFAULT) -> str:
     RUNS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    state = {"market": market, "role": role, "dry_run": dry_run, "model": MODEL, "steps": []}
+    state = {"market": market, "role": role, "dry_run": dry_run, "deep": deep, "model": MODEL, "steps": []}
+    planned = EST["job"] + EST["people"] * MAX_PEOPLE_COMPANIES + (EST["enrich"] * deep_n if deep else 0)
+    print(f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
 
     print("1/5 planning with Gemini...")
     p = plan(market, role)
@@ -377,6 +482,7 @@ def run(market: str, role: str, dry_run: bool) -> str:
         if not key:
             continue
         c = companies.setdefault(key, {"name": co.get("name"), "domain": co.get("primary_domain"),
+                                       "company_id": co.get("crustdata_company_id"),
                                        "headcount": j.get("company", {}).get("headcount", {}).get("total"),
                                        "last_round": j.get("company", {}).get("funding", {}).get("last_round_type"),
                                        "jobs": [], "people": []})
@@ -386,37 +492,68 @@ def run(market: str, role: str, dry_run: bool) -> str:
                           "posted": j.get("metadata", {}).get("date_added")})
 
     print(f"3/5 finding decision-makers at top {MAX_PEOPLE_COMPANIES} companies...")
-    titles = p.get("decision_maker_titles") or ["CTO", "VP Engineering"]
+    titles = list(dict.fromkeys((p.get("decision_maker_titles") or []) + DEFAULT_DM_TITLES))[:6]
     ranked = sorted(companies.values(), key=lambda c: -len(c["jobs"]))
     for c in ranked[:MAX_PEOPLE_COMPANIES]:
-        if not c["domain"]:
-            continue
-        try:
-            res = people_search(c["domain"], titles, dry_run)
-            for pr in res.get("profiles", []):
-                c["people"].append({
-                    "name": pr.get("basic_profile", {}).get("name"),
-                    "title": pr.get("basic_profile", {}).get("current_title"),
-                    "url": (pr.get("social_handles", {}).get("professional_network_identifier") or {}).get("profile_url"),
-                })
-            state["steps"].append({"tool": "people_search", "domain": c["domain"],
-                                   "results": len(res.get("profiles", [])),
-                                   "credits": res.get("_credits_used")})
-        except Exception as e:  # noqa: BLE001 - recover: skip this company, keep going
-            state["steps"].append({"tool": "people_search", "domain": c["domain"], "error": str(e)})
-            print(f"  people search failed for {c['domain']}: {e}")
+        for pr in people_search(c, titles, dry_run, state):
+            pid = pr.get("crustdata_person_id")
+            url = ((pr.get("social_handles") or {}).get("professional_network_identifier") or {}).get("profile_url")
+            c["people"].append({
+                "name": (pr.get("basic_profile") or {}).get("name"),
+                "title": (pr.get("basic_profile") or {}).get("current_title"),
+                "url": url or (f"crustdata:person/{pid}" if pid else None),
+            })
+
+    if deep:
+        top = [c for c in ranked[:deep_n] if c.get("company_id")]
+        print(f"3b deep mode: enriching {len(top)} companies (headcount, growth, funding)...")
+        if top and (dry_run or within_budget("enrich", len(top))):
+            try:
+                res = company_enrich([c["company_id"] for c in top], dry_run)
+                state["steps"].append({"tool": "company_enrich", "n": len(top),
+                                       "credits": res.get("_credits_used")})
+                by_id = {}
+                for r in res.get("results", []):
+                    for m in (r.get("matches") or [])[:1]:
+                        d = m.get("company_data") or {}
+                        by_id[d.get("crustdata_company_id")] = d
+                for c in top:
+                    d = by_id.get(c["company_id"])
+                    if not d:
+                        continue
+                    hc, fu = d.get("headcount") or {}, d.get("funding") or {}
+                    c["firmographics"] = {
+                        "source": f"Crustdata /company/enrich (company_id {c['company_id']})",
+                        "headcount": hc.get("total"),
+                        "headcount_growth_6m_pct": (hc.get("growth_percent") or {}).get("six_months"),
+                        "headcount_growth_yoy_pct": (hc.get("growth_percent") or {}).get("yoy"),
+                        "funding_total_usd": fu.get("total_investment_usd"),
+                        "last_round_type": fu.get("last_round_type"),
+                        "last_round_amount_usd": fu.get("last_round_amount_usd"),
+                        "last_fundraise_date": fu.get("last_fundraise_date"),
+                    }
+            except Exception as e:  # noqa: BLE001
+                state["steps"].append({"tool": "company_enrich", "error": str(e)})
+                recover_event("company_enrich_error", error=str(e)[:200])
     state["evidence"] = ranked
 
     print("4/5 verifying claims with Gemini...")
     result = verify(market, role, ranked) if ranked else {"companies": [], "dropped": []}
     state["result"] = result
     state["recovery_events"] = RECOVERY_LOG
+    state["credits_spent"] = round(CREDITS["spent"], 3)
+    state["credits_estimated"] = round(CREDITS["estimated"], 3)
+    state["credits_skipped_by_cap"] = CREDITS["skipped"]
+    result["_firmo"] = {c["name"]: c["firmographics"] for c in ranked if c.get("firmographics")}
+    result["_credits"] = (state["credits_estimated"], state["credits_spent"])
 
     print("5/5 writing report...")
     report = render(market, role, result, dry_run)
     (RUNS_DIR / f"{stamp}.json").write_text(json.dumps(state, indent=2, default=str))
     (RUNS_DIR / f"{stamp}.md").write_text(report)
-    print(f"\nSaved runs/{stamp}.json and runs/{stamp}.md\n")
+    print(f"\nSaved runs/{stamp}.json and runs/{stamp}.md")
+    print(f"Crustdata credits: estimated {state['credits_estimated']:.2f}, "
+          f"actual {state['credits_spent']:.2f} (from X-Credits-Used; cache hits = 0)\n")
     return report
 
 
@@ -431,7 +568,7 @@ def mock_jobs() -> dict:
     return {"_credits_used": "0 (mock)", "job_listings": [{
         "crustdata_job_id": i,
         "job_details": {"title": t, "url": f"https://jobs.example.com/{d}/{i}"},
-        "company": {"basic_info": {"name": n, "primary_domain": d},
+        "company": {"basic_info": {"name": n, "primary_domain": d, "crustdata_company_id": 1000 + i},
                     "headcount": {"total": h}, "funding": {"last_round_type": r}},
         "location": {"raw": loc}, "metadata": {"date_added": "2026-09-30T12:00:00"},
     } for i, (n, d, t, loc, h, r) in enumerate(rows)]}
@@ -452,11 +589,18 @@ def main():
     ap.add_argument("role", help='e.g. "backend engineer"')
     ap.add_argument("--dry-run", action="store_true",
                     help="skip Crustdata and use mock data (Gemini + neatlogs still run)")
+    ap.add_argument("--deep", action="store_true",
+                    help="also run /company/enrich on the top companies (~2 credits each)")
+    ap.add_argument("--deep-n", type=int, default=DEEP_TOP_N_DEFAULT,
+                    help=f"companies to enrich in --deep mode (default {DEEP_TOP_N_DEFAULT})")
+    ap.add_argument("--max-credits", type=float, default=DEFAULT_MAX_CREDITS,
+                    help=f"hard cap on estimated Crustdata credits per run (default {DEFAULT_MAX_CREDITS})")
     args = ap.parse_args()
+    CREDITS["max"] = args.max_credits
     if not os.environ.get("NEATLOGS_API_KEY"):
         print("warning: NEATLOGS_API_KEY not set; traces will NOT be exported")
     try:
-        print(run(args.market, args.role, args.dry_run))
+        print(run(args.market, args.role, args.dry_run, args.deep, args.deep_n))
     finally:
         neatlogs.flush()
         neatlogs.shutdown()
