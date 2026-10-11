@@ -28,7 +28,7 @@ cp .env.example .env   # add NEATLOGS_API_KEY, CRUSTDATA_API_KEY, GEMINI_API_KEY
 python app.py          # open http://localhost:8000 (tick Dry run for mock data / 0 credits)
 ```
 
-**Proof:** [docs/EVIDENCE.md](docs/EVIDENCE.md) (before/after, failures and recoveries, Entire checkpoints, cfo.ai results) · [docs/demo-script.md](docs/demo-script.md) · [docs/unit-economics.md](docs/unit-economics.md)
+**Proof:** [docs/EVIDENCE.md](docs/EVIDENCE.md) (before/after, failures and recoveries, neatlogs detections, Entire checkpoints, cfo.ai results) · [neatlogs recovery trace](https://app.neatlogs.com/traces/0f5c9601c4dd3e2553b89404437cdf41?scrollTo=e4b43864372824dd&orgId=73ac3bcd-77b2-4747-9c72-40b38d04d057&projectId=43529309-226a-4089-ae78-c0344ee7c99a) · [neatlogs detections](docs/EVIDENCE.md#neatlogs-tracing--detections) · [docs/demo-script.md](docs/demo-script.md) · [docs/unit-economics.md](docs/unit-economics.md)
 
 
 neathack-agent is a hiring-signal scout built for neatHack 2026. Give it a market (e.g. Series A–B AI infra in the Bay Area) and a role, and it returns a ranked list of companies hiring for that role, key decision-makers, and a source for every claim. Built with Crustdata (data), neatlogs (tracing), Entire (checkpoints), and cfo.ai (unit economics).

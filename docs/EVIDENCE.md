@@ -20,12 +20,22 @@ All numbers come from real runs on the user's Mac (files in `runs/`, not committ
 
 | Failure (real) | What the agent did | Where to see it |
 |---|---|---|
-| Gemini `503 UNAVAILABLE` / `429 RESOURCE_EXHAUSTED` | Backed off 5/15/30 s, then switched to `gemini-3.5-flash-lite` (`[recover] gemini_retry`, `fallback_model`). If both fail: LiteLLM proxy (`provider_switch`), then a code-only verify ("LLM verify unavailable"). It never crashes. | timeline + `recover:*` spans `<paste neatlogs trace link>` |
+| Gemini `503 UNAVAILABLE` / `429 RESOURCE_EXHAUSTED` | Backed off 5/15/30 s, then switched to `gemini-3.5-flash-lite` (`[recover] gemini_retry`, `fallback_model`). If both fail: LiteLLM proxy (`provider_switch`), then a code-only verify ("LLM verify unavailable"). It never crashes. | timeline + `recover:*` spans: [neatlogs trace, `recover:fallback_model` span](https://app.neatlogs.com/traces/0f5c9601c4dd3e2553b89404437cdf41?scrollTo=e4b43864372824dd&orgId=73ac3bcd-77b2-4747-9c72-40b38d04d057&projectId=43529309-226a-4089-ae78-c0344ee7c99a) |
 | Verify kept only 1 company | `[recover] broaden_market`: one broader plan (AI/ML infra, ML platform, MLOps, data infra, devtools). New companies only, inside `--max-credits`, cache first. Then verify again. | run `20261010-215413` |
 | Over-strict fit ("insufficient evidence") | Now kept with a **fit unconfirmed** badge. Old unsure verdicts are removed from the cache (`[recover] fit_cache_invalidated`). | card badge |
 | People search returned 0 (v1) | Lookup by company_id, then domain, then name (`people_search_broaden`). "None found" is cached, and the card says "not looked up (budget)" when that's the reason. | company cards |
 | Empty job search | Filters broadened over 3 strictness levels. | `no jobs at strictness level …` |
 | Re-runs spent credits again | Plan, request and per-company caches, plus `--no-spend`. A cached rerun costs 0 credits. | cost meter "cache hits" |
+
+## neatlogs (tracing + detections)
+
+| Evidence | Details |
+|---|---|
+| **Recovery trace** | [Trace with the `recover:fallback_model` span](https://app.neatlogs.com/traces/0f5c9601c4dd3e2553b89404437cdf41?scrollTo=e4b43864372824dd&orgId=73ac3bcd-77b2-4747-9c72-40b38d04d057&projectId=43529309-226a-4089-ae78-c0344ee7c99a). Gemini failed, so the agent fell back to `gemini-3.5-flash-lite`. The link scrolls straight to that span. |
+| **Custom detection "Recover event fired"** | Span-level detection created **Oct 11 2026**. Condition: *Span Name contains `recover`*, severity Neutral, all spans. It retroactively flagged **113 recovery spans** across past runs: `recover:gemini_retry`, `recover:fallback_model`, `gather_jobs_with_recovery`, `find_decision_makers_with_recovery`. |
+| **Built-in detections** | neatlogs' built-in **Execution Failed** detection catches the errors behind those recoveries (e.g. Gemini 503/429), so each failure and the agent's recovery can be seen side by side. |
+| **Detection Copilot** | Configured with the neatHack LiteLLM key as a **Self-hosted / Custom provider** (`claude-haiku` via `https://litellm.vision.aivar.app/v1`). Key verified. |
+| Screenshot | `docs/img/neatlogs-detection.png` `<add screenshot>` |
 
 ## Entire (checkpoints + Graph)
 
