@@ -1,0 +1,5 @@
+Update README.md with a short project description: "neathack-agent is a hiring-signal scout built for neatHack 2026. Give it a market (e.g. Series A–B AI infra in the Bay Area) and a role, and it returns a ranked list of companies hiring for that role, key decision-makers, and a source for every claim. Built with Crustdata (data), neatlogs (tracing), Entire (checkpoints), and cfo.ai (unit economics)." Then commit with the message "First feature with Entire" and push to main. Link the commit to this session if Entire asks.
+
+---
+
+Commit any local changes with the message 'First live run working' and push."
