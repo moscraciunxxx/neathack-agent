@@ -77,6 +77,8 @@ def summarize(state: dict) -> dict:
                       "people_status": e.get("people_status"),
                       "people_label": agent.PEOPLE_STATUS_LABEL.get(e.get("people_status") or "none_found"),
                       "market_fit": next((f["reason"] for f in res.get("market_fit") or []
+                                          if f.get("name") == c.get("name")), None),
+                      "fit_status": next((f.get("status") for f in res.get("market_fit") or []
                                           if f.get("name") == c.get("name")), None)})
     return {"run_id": state.get("run_id"), "market": state.get("market"), "role": state.get("role"),
             "dry_run": state.get("dry_run"), "llm_verify": res.get("llm_verify", True),

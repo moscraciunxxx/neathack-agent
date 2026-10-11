@@ -149,12 +149,12 @@ function render(r){
     const fm = v => typeof v === 'number' ? `$${(v/1e6).toFixed(1)}M` : 'n/a';
     const pct = v => typeof v === 'number' ? `${v.toFixed(1)}%` : 'n/a';
     return `<div class="card">
-      <div class="row"><h3>${esc(c.rank)}. ${esc(c.name)}</h3><span class="dom">${link(c.domain ? 'https://'+c.domain : '', c.domain||'')}</span></div>
+      <div class="row"><h3>${esc(c.rank)}. ${esc(c.name)}${c.fit_status === 'unconfirmed' ? ' <span class="pill" style="border-color:var(--recover);color:var(--recover)">fit unconfirmed</span>' : ''}</h3><span class="dom">${link(c.domain ? 'https://'+c.domain : '', c.domain||'')}</span></div>
       <div class="why">${esc(c.why)}</div>
       ${c.headcount||c.last_round ? `<span class="pill">headcount ${esc(c.headcount ?? 'n/a')}</span><span class="pill">${esc(c.last_round ?? 'round n/a')}</span>` : ''}
       <h4>Open roles</h4><ul>${c.jobs.map(j => `<li>${link(j.url, j.title)} <span class="dom">${esc(j.location||'')}</span></li>`).join('') || '<li class="dom">none cited</li>'}</ul>
       <h4>Decision-makers</h4><ul>${c.people.map(p => `<li>${link(p.source, p.name)} <span class="dom">${esc(p.title||'')}</span></li>`).join('') || `<li class="dom">${esc(c.people_label || 'none found')}</li>`}</ul>
-      ${c.market_fit ? `<div class="dom" style="margin-top:8px">Market fit: ${esc(c.market_fit)}</div>` : ''}
+      ${c.market_fit ? `<div class="dom" style="margin-top:8px">${c.fit_status === 'unconfirmed' ? '<span class="pill" style="border-color:var(--recover);color:var(--recover)">fit unconfirmed</span>' : 'Market fit:'} ${esc(c.market_fit)}</div>` : ''}
       ${f ? `<h4>Firmographics</h4><div><span class="pill">headcount ${esc(f.headcount ?? 'n/a')}</span><span class="pill">6m ${pct(f.headcount_growth_6m_pct)}</span><span class="pill">YoY ${pct(f.headcount_growth_yoy_pct)}</span><span class="pill">raised ${fm(f.funding_total_usd)}</span><span class="pill">${esc(f.last_round_type||'')} ${fm(f.last_round_amount_usd)} ${esc(f.last_fundraise_date||'')}</span></div><div class="dom">source: ${esc(f.source)}</div>` : ''}
     </div>`; }).join('') : '<div class="panel empty">No verified companies.</div>';
   const dr = r.dropped || [];

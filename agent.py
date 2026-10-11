@@ -511,6 +511,25 @@ def _normalize_dropped(items) -> list:
 
 
 FIT_CACHE_FILE = RUNS_DIR / "fit_cache.json"
+MIN_KEPT = 3
+_UNSURE = ("insufficient", "unconfirmed", "unclear", "not enough", "cannot determine", "can't determine")
+
+
+def broaden_market(market: str) -> str:
+    return f"{market} (broadened: AI/ML infrastructure, ML platform, MLOps, data infrastructure, developer tools)"
+
+
+def _fit_status(f: dict) -> str:
+    """fit | off_market | unconfirmed. Only a clear, reasoned off-market verdict drops a company."""
+    st = str(f.get("status") or "").lower()
+    if not st:
+        st = "fit" if f.get("fit") is True else "off_market" if f.get("fit") is False else "unconfirmed"
+    reason = (f.get("reason") or "").lower()
+    if st not in ("fit", "off_market", "unconfirmed"):
+        st = "unconfirmed"
+    if st == "off_market" and (not reason.strip() or any(u in reason for u in _UNSURE)):
+        st = "unconfirmed"
+    return st
 
 
 def _fit_key(market: str, role: str, c: dict) -> str:
@@ -527,7 +546,14 @@ def _fit_view(c: dict) -> dict:
 
 @neatlogs.span(kind="AGENT", name="verifier", role="Market-fit judgment + source check, temperature 0")
 def verify(market: str, role: str, companies: list, refit: bool = False, dry_run: bool = False) -> dict:
-    fit_cache = {} if refit else _read_json(FIT_CACHE_FILE)
+    all_fits = _read_json(FIT_CACHE_FILE)
+    stale = [k for k, v in all_fits.items() if _fit_status(v) == "unconfirmed"]
+    if stale and not dry_run:  # invalidate old 'insufficient evidence' verdicts
+        for k in stale:
+            all_fits.pop(k)
+        _write_json(FIT_CACHE_FILE, all_fits)
+        recover_event("fit_cache_invalidated", entries=len(stale), reason="insufficient evidence")
+    fit_cache = {} if refit else {k: v for k, v in all_fits.items() if k not in stale}
     known = {c.get("name"): fit_cache[_fit_key(market, role, c)] for c in companies
              if _fit_key(market, role, c) in fit_cache}
     prompt = f"""You are a strict fact checker. Market: "{market}". Role: "{role}".
@@ -535,14 +561,17 @@ def verify(market: str, role: str, companies: list, refit: bool = False, dry_run
 STEP 1, market fit: for EVERY company in COMPANY PROFILES give an explicit judgment whether the
 company itself (its product/industry, not just the job title) belongs to the market "{market}".
 Use the profile (industries/description) when present; otherwise name, domain and job titles.
-A company that only hires for the role but sells into an unrelated industry is NOT a fit.
-If unsure, fit=false with reason "insufficient evidence".
+status values:
+- "fit": evidence shows it belongs to the market.
+- "off_market": evidence CLEARLY shows an unrelated industry (state what it does, e.g. "consumer
+  payments app"). Only use this when you are confident.
+- "unconfirmed": not enough evidence either way (e.g. only a domain and job title). Do not guess.
 
-STEP 2, claims: for companies with fit=true, write a ranked list. Every claim must cite a source
+STEP 2, claims: for companies with status "fit" or "unconfirmed", write a ranked list (fit first). Every claim must cite a source
 URL or company_id from that company's evidence. Keep a claim if its source appears in that
 company's evidence; drop claims with no source (with reason). Do not invent companies, people or URLs.
 
-Return JSON: {{"market_fit": [{{"name": str, "fit": bool, "reason": str}}],
+Return JSON: {{"market_fit": [{{"name": str, "status": "fit"|"off_market"|"unconfirmed", "reason": str}}],
 "companies": [{{"name": str, "domain": str, "rank": int, "why": str,
 "claims": [{{"text": str, "source": str}}],
 "decision_makers": [{{"name": str, "title": str, "source": str}}]}}],
@@ -573,17 +602,27 @@ EVIDENCE:
         f = known.get(c.get("name")) or fits.get(c.get("name"))
         if not f:
             continue
-        f = {"name": c.get("name"), "fit": bool(f.get("fit")), "reason": f.get("reason") or ""}
+        st = _fit_status(f)
+        f = {"name": c.get("name"), "status": st, "fit": st != "off_market", "reason": f.get("reason") or ""}
         out["market_fit"].append(f)
-        if out.get("llm_verify") and c.get("name") not in known:
+        if out.get("llm_verify") and c.get("name") not in known and st != "unconfirmed":
             fit_cache[_fit_key(market, role, c)] = f
     if out.get("llm_verify") and fit_cache and not dry_run:
         _write_json(FIT_CACHE_FILE, {**_read_json(FIT_CACHE_FILE), **fit_cache})
-    off = {f["name"] for f in out["market_fit"] if not f["fit"]}
+    off = {f["name"] for f in out["market_fit"] if f["status"] == "off_market"}
     for f in out["market_fit"]:
-        if not f["fit"]:
+        if f["status"] == "off_market":
             dropped.append({"text": f"{f['name']} (whole company)", "reason": f"off-market: {f['reason']}"})
     out["companies"] = [c for c in out.get("companies", []) if c.get("name") not in off]
+    # Unconfirmed companies the LLM left out of its list: keep them, built from evidence.
+    have = {c.get("name") for c in out["companies"]}
+    missing = [c for c in companies if c.get("name") not in have and c.get("name") not in off
+               and any(f["name"] == c.get("name") and f["status"] == "unconfirmed" for f in out["market_fit"])]
+    if missing:
+        extra = code_only_result(missing)["companies"]
+        for k, c in enumerate(extra):
+            c["rank"] = len(out["companies"]) + k + 1
+        out["companies"] += extra
     for c in out.get("companies", []):
         ev = _evidence_company(c, companies)
         keep = []
@@ -663,7 +702,8 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
             lines.append(f"**Decision-makers:** {PEOPLE_STATUS_LABEL.get(st, st)}")
         fit = next((f for f in result.get("market_fit") or [] if f["name"] == c.get("name")), None)
         if fit:
-            lines.append(f"_Market fit: {fit['reason']}_")
+            tag = "**fit unconfirmed**" if fit.get("status") == "unconfirmed" else "Market fit"
+            lines.append(f"_{tag}: {fit['reason']}_")
         lines.append("")
     if result.get("_credits"):
         lines.append(f"_Crustdata credits this run: estimated {result['_credits'][0]:.2f}, "
@@ -679,16 +719,9 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
 
 
 # ------------------------------------------------------------- WORKFLOW ----
-@neatlogs.span(kind="WORKFLOW", name="hiring_signal_scout")
-def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int = DEEP_TOP_N_DEFAULT,
-        replan: bool = False) -> str:
-    RUNS_DIR.mkdir(exist_ok=True)
-    reset_run_counters()
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    state = {"market": market, "role": role, "dry_run": dry_run, "deep": deep, "model": MODEL, "steps": []}
-    planned = EST["job"] + EST["people"] * (MAX_PEOPLE_COMPANIES_DEEP if deep else MAX_PEOPLE_COMPANIES) + (EST["enrich"] * deep_n if deep else 0)
-    emit("info", f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
-
+def _collect(market: str, role: str, state: dict, dry_run: bool, deep: bool, deep_n: int,
+             replan: bool, exclude: frozenset = frozenset()):
+    """plan -> jobs -> people -> (deep) enrich. Returns (plan, ranked companies)."""
     pk = plan_key(market, role)
     plans = _read_json(PLAN_CACHE_FILE)
     if pk in plans and not replan:
@@ -731,6 +764,8 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                           "location": j.get("location", {}).get("raw"),
                           "posted": j.get("metadata", {}).get("date_added")})
 
+    for k in [k for k, c in companies.items() if k in exclude or c.get("name") in exclude]:
+        companies.pop(k)
     titles = list(dict.fromkeys((p.get("decision_maker_titles") or []) + DEFAULT_DM_TITLES))[:6]
     ranked = sorted(companies.values(), key=lambda c: -len(c["jobs"]))
     n_people = MAX_PEOPLE_COMPANIES_DEEP if deep else MAX_PEOPLE_COMPANIES
@@ -796,12 +831,44 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
             except Exception as e:  # noqa: BLE001
                 state["steps"].append({"tool": "company_enrich", "error": str(e)})
                 recover_event("company_enrich_error", error=str(e)[:200])
+    return p, ranked
+
+
+@neatlogs.span(kind="WORKFLOW", name="hiring_signal_scout")
+def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int = DEEP_TOP_N_DEFAULT,
+        replan: bool = False) -> str:
+    RUNS_DIR.mkdir(exist_ok=True)
+    reset_run_counters()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    state = {"market": market, "role": role, "dry_run": dry_run, "deep": deep, "model": MODEL, "steps": []}
+    planned = EST["job"] + EST["people"] * (MAX_PEOPLE_COMPANIES_DEEP if deep else MAX_PEOPLE_COMPANIES) + (EST["enrich"] * deep_n if deep else 0)
+    emit("info", f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
+
+    p, ranked = _collect(market, role, state, dry_run, deep, deep_n, replan)
     state["evidence"] = ranked
     emit("state", f"  state: {len(ranked)} companies, {sum(len(c['jobs']) for c in ranked)} jobs, "
                   f"{sum(len(c['people']) for c in ranked)} people, credits so far {CREDITS['spent']:.2f}")
 
     emit("verify", "4/5 verifying claims with Gemini...")
     result = verify(market, role, ranked, refit=replan, dry_run=dry_run) if ranked else {"companies": [], "dropped": []}
+    kept = len(result.get("companies", []))
+    if kept < MIN_KEPT:
+        recover_event("broaden_market", kept=kept, min=MIN_KEPT, market=broaden_market(market))
+        main_plan = state["plan"]
+        try:
+            _, extra = _collect(broaden_market(market), role, state, dry_run, deep, deep_n, False,
+                                exclude=frozenset(c["name"] for c in ranked))
+        except Exception as e:  # noqa: BLE001
+            recover_event("broaden_failed", error=str(e)[:200])
+            extra = []
+        state["plan_broadened"], state["plan"] = state["plan"], main_plan
+        if extra:
+            ranked = ranked + extra
+            state["evidence"] = ranked
+            emit("verify", f"  re-verifying {len(ranked)} companies after broadening (+{len(extra)} new)...")
+            result = verify(market, role, ranked, refit=False, dry_run=dry_run)
+        else:
+            emit("recover", "  broadening found no new companies (or budget/no-spend blocked it)")
     state["result"] = result
     state["recovery_events"] = RECOVERY_LOG
     state["credits_spent"] = round(CREDITS["spent"], 3)
