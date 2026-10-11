@@ -1,5 +1,1 @@
-Pull latest main. Add .DS_Store to .gitignore. Add a "Demo" section to README.md explaining how to run the web app (python app.py, open http://localhost:8000, use No-spend + Simulate Gemini failure for rehearsal). Commit "Add demo instructions, ignore .DS_Store" and push.
-
----
-
 Pull latest main, then add a CHANGELOG.md summarizing today's features (web app, recover/broaden, market-fit verify, outreach drafts, cfo.ai pricing). Commit and push.
