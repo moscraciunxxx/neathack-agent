@@ -31,24 +31,17 @@ python agent.py --deep "Series A AI infra Bay Area" "backend engineer"
 - `--no-spend` uses cached data only and skips every paid Crustdata call that is not cached (0 credits).
 - Each run prints cache hits, paid calls and calls skipped by `--no-spend`, and saves them as `cache_stats` in `runs/<timestamp>.json`.
 
-## Demo web app (local)
+## Demo
 
 ```bash
 pip install -r requirements.txt
 python app.py
-# then open http://localhost:8000
 ```
 
-- Form: market, role, **Deep**, **No-spend** (cache only, 0 credits), **Dry run** (mock data), **Replan**,
-  and **Simulate Gemini failure** (forces fake 503s on the first N Gemini calls so `[recover]` retries /
-  fallback model show on camera; labeled `SIMULATED` in the timeline and as a `SIMULATED_gemini_503` span in neatlogs).
-- Live timeline of the agent loop (plan → tools → state → recover → verify → report) over server-sent events.
-- Report as company cards (jobs with links, decision-makers with LinkedIn links, firmographics) + dropped-claims panel.
-- Cost meter: Crustdata credits spent, cache hits, est. COGS vs suggested price ($12 deep / $3 standard) and margin
-  (credit $ is an assumption, see `docs/unit-economics.md`).
-- **Outreach drafts**: one short first email per decision-maker, grounded only in the cited job + funding facts.
-  One batched Gemini call, cached in `runs/outreach_cache.json`, template fallback if Gemini is down.
-  Drafts only: nothing is ever sent. Use the Copy button.
-- Trace link: “Open neatlogs traces” (top right) → app.neatlogs.com, workflow `hiring_signal_scout`.
+Open [http://localhost:8000](http://localhost:8000).
 
-CLI equivalent of the failure simulation: `python agent.py "<market>" "<role>" --no-spend --simulate-failures 2`.
+For rehearsal (0 Crustdata credits, shows recover/fallback on camera): check **No-spend** and **Simulate Gemini failure**, then run. That forces fake 503s on the first Gemini calls so retries and the fallback model appear in the live timeline (`SIMULATED` labels).
+
+Also on the form: market, role, **Deep**, **Dry run** (mock data), **Replan**. The UI streams the agent loop over SSE, renders company cards (jobs, decision-makers, firmographics), a cost meter, outreach drafts (copy only — nothing is sent), and a link to neatlogs traces.
+
+CLI equivalent: `python agent.py "<market>" "<role>" --no-spend --simulate-failures 2`.
