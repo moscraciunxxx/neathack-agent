@@ -59,11 +59,35 @@ RECOVERY_LOG = []  # retry/fallback events, saved into run state
 _client = None
 
 
+# ---- event hook (used by app.py for the live timeline) ----------------------
+EVENT_HOOK = {"fn": None}
+SIMULATE = {"remaining": 0}   # app/CLI: force fake 503s on the next N Gemini calls
+LAST_RUN = {"state": None, "report": None}
+
+
+def emit(stage: str, msg: str, **data) -> None:
+    """Print for the CLI and forward to the web UI. stage in plan|tools|state|recover|verify|report|info."""
+    print(msg)
+    fn = EVENT_HOOK.get("fn")
+    if fn:
+        try:
+            fn({"stage": stage, "msg": msg.strip(), **{k: (v if isinstance(v, (int, float, bool)) or v is None else str(v)) for k, v in data.items()}})
+        except Exception:  # noqa: BLE001 - UI problems must never break a run
+            pass
+
+
+def reset_run_counters() -> None:
+    CREDITS.update(spent=0.0, estimated=0.0, skipped=[])
+    for k in CACHE_STATS:
+        CACHE_STATS[k] = 0
+    RECOVERY_LOG.clear()
+
+
 def gemini():
     global _client
     if _client is None:
         if not os.environ.get("GEMINI_API_KEY"):
-            sys.exit("GEMINI_API_KEY missing in .env")
+            raise RuntimeError("GEMINI_API_KEY missing in .env")
         # Client created after neatlogs.init(); wrap() traces every call as an LLM span.
         _client = neatlogs.wrap(genai.Client(api_key=os.environ["GEMINI_API_KEY"]))
     return _client
@@ -72,7 +96,7 @@ def gemini():
 def recover_event(what: str, **info) -> None:
     """Visible print + a neatlogs span so retries/fallbacks show up as 'recover' in traces."""
     msg = f"  [recover] {what} " + " ".join(f"{k}={v}" for k, v in info.items())
-    print(msg)
+    emit("recover", msg, event=what)
     RECOVERY_LOG.append({"event": what, **{k: str(v) for k, v in info.items()}})
     with neatlogs.trace(f"recover:{what}", kind="CHAIN") as span:
         span.set_attribute("neatlogs.recover.event", what)
@@ -88,6 +112,14 @@ def _is_transient(e: Exception) -> bool:
 
 
 def _generate_json(model: str, prompt: str) -> dict:
+    if SIMULATE["remaining"] > 0:
+        SIMULATE["remaining"] -= 1
+        with neatlogs.trace("SIMULATED_gemini_503", kind="CHAIN") as span:
+            span.set_attribute("neatlogs.simulation", "forced fake 503 for demo (not a real Gemini error)")
+            span.set_attribute("neatlogs.simulation.model", model)
+        raise genai_errors.ServerError(
+            503, {"error": {"code": 503, "status": "UNAVAILABLE",
+                            "message": "SIMULATED failure for demo (not a real Gemini error)"}})
     resp = gemini().models.generate_content(
         model=model,
         contents=prompt,
@@ -173,7 +205,7 @@ def entity_get(kind: str, company_id):
     v = _read_json(ENTITY_CACHE_FILE).get(f"{kind}:{company_id}")
     if v is not None:
         CACHE_STATS["entity_hits"] += 1
-        print(f"  (entity cache hit {kind}:{company_id}, 0 credits)")
+        emit("tools", f"  (entity cache hit {kind}:{company_id}, 0 credits)", cache=True)
     return v
 
 
@@ -195,7 +227,7 @@ def _crust_post(path: str, body: dict) -> dict:
     ck = hashlib.sha256((path + json.dumps(body, sort_keys=True)).encode()).hexdigest()
     cache = _load_cache()
     if ck in cache:
-        print(f"  (cache hit for {path}, 0 credits)")
+        emit("tools", f"  (cache hit for {path}, 0 credits)", cache=True)
         out = dict(cache[ck])
         out["_credits_used"] = "0 (cached)"
         CACHE_STATS["hits"] += 1
@@ -414,11 +446,11 @@ def gather_jobs(p: dict, state: dict, dry_run: bool) -> list:
             state["steps"].append(step)
             if jobs:
                 return jobs
-            print(f"  no jobs at strictness level {level}, broadening...")
+            emit("recover", f"  no jobs at strictness level {level}, broadening...")
         except Exception as e:  # noqa: BLE001
             step["error"] = str(e)
             state["steps"].append(step)
-            print(f"  job search error at level {level}: {e}")
+            emit("recover", f"  job search error at level {level}: {e}")
             if "401" in str(e) or "missing" in str(e):
                 break
     return []
@@ -585,28 +617,36 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
 def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int = DEEP_TOP_N_DEFAULT,
         replan: bool = False) -> str:
     RUNS_DIR.mkdir(exist_ok=True)
+    reset_run_counters()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     state = {"market": market, "role": role, "dry_run": dry_run, "deep": deep, "model": MODEL, "steps": []}
     planned = EST["job"] + EST["people"] * MAX_PEOPLE_COMPANIES + (EST["enrich"] * deep_n if deep else 0)
-    print(f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
+    emit("info", f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
 
     pk = plan_key(market, role)
     plans = _read_json(PLAN_CACHE_FILE)
     if pk in plans and not replan:
-        print("1/5 reusing cached plan for this market+role (use --replan for a new one)")
+        emit("plan", "1/5 reusing cached plan for this market+role (use --replan for a new one)")
         p = plans[pk]
         state["plan_source"] = "cache"
     else:
-        print("1/5 planning with Gemini...")
-        p = plan(market, role)
+        emit("plan", "1/5 planning with Gemini...")
+        try:
+            p = plan(market, role)
+        except RuntimeError as e:  # Gemini down: deterministic plan so the run continues
+            recover_event("plan_fallback", reason=str(e)[:200])
+            p = {"title_keywords": [role], "locations": [], "country": None, "round_types": [],
+                 "max_headcount": None, "decision_maker_titles": [], "steps": ["fallback plan (no LLM)"]}
         state["plan_source"] = "gemini"
         p["since"] = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
         if not dry_run:
             plans[pk] = p
             _write_json(PLAN_CACHE_FILE, plans)
     state["plan"] = p
+    emit("plan", f"  plan: titles={p.get('title_keywords')} locations={p.get('locations')} "
+                 f"rounds={p.get('round_types')}")
 
-    print("2/5 searching Crustdata jobs...")
+    emit("tools", "2/5 searching Crustdata jobs...")
     jobs = gather_jobs(p, state, dry_run)
 
     companies = {}
@@ -625,7 +665,7 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                           "location": j.get("location", {}).get("raw"),
                           "posted": j.get("metadata", {}).get("date_added")})
 
-    print(f"3/5 finding decision-makers at top {MAX_PEOPLE_COMPANIES} companies...")
+    emit("tools", f"3/5 finding decision-makers at top {MAX_PEOPLE_COMPANIES} companies...")
     titles = list(dict.fromkeys((p.get("decision_maker_titles") or []) + DEFAULT_DM_TITLES))[:6]
     ranked = sorted(companies.values(), key=lambda c: -len(c["jobs"]))
     for c in ranked[:MAX_PEOPLE_COMPANIES]:
@@ -640,7 +680,7 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
 
     if deep:
         top = [c for c in ranked[:deep_n] if c.get("company_id")]
-        print(f"3b deep mode: enriching {len(top)} companies (headcount, growth, funding)...")
+        emit("tools", f"3b deep mode: enriching {len(top)} companies (headcount, growth, funding)...")
         by_id = {}
         if not dry_run:
             for c in top:
@@ -682,8 +722,10 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                 state["steps"].append({"tool": "company_enrich", "error": str(e)})
                 recover_event("company_enrich_error", error=str(e)[:200])
     state["evidence"] = ranked
+    emit("state", f"  state: {len(ranked)} companies, {sum(len(c['jobs']) for c in ranked)} jobs, "
+                  f"{sum(len(c['people']) for c in ranked)} people, credits so far {CREDITS['spent']:.2f}")
 
-    print("4/5 verifying claims with Gemini...")
+    emit("verify", "4/5 verifying claims with Gemini...")
     result = verify(market, role, ranked) if ranked else {"companies": [], "dropped": []}
     state["result"] = result
     state["recovery_events"] = RECOVERY_LOG
@@ -695,11 +737,15 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
     result["_firmo"] = {c["name"]: c["firmographics"] for c in ranked if c.get("firmographics")}
     result["_credits"] = (state["credits_estimated"], state["credits_spent"])
 
-    print("5/5 writing report...")
+    emit("verify", f"  verify: kept {len(result.get('companies', []))} companies, "
+                   f"dropped {len(result.get('dropped', []))} claim(s)")
+    emit("report", "5/5 writing report...")
     report = render(market, role, result, dry_run)
     (RUNS_DIR / f"{stamp}.json").write_text(json.dumps(state, indent=2, default=str))
     (RUNS_DIR / f"{stamp}.md").write_text(report)
-    print(f"\nSaved runs/{stamp}.json and runs/{stamp}.md")
+    state["run_id"] = stamp
+    LAST_RUN.update(state=state, report=report)
+    emit("state", f"\nSaved runs/{stamp}.json and runs/{stamp}.md")
     print(f"Crustdata credits: estimated {state['credits_estimated']:.2f}, "
           f"actual {state['credits_spent']:.2f} (from X-Credits-Used)")
     print(f"Cache: {CACHE_STATS['hits']} request hit(s), {CACHE_STATS['entity_hits']} company hit(s), "
@@ -749,7 +795,10 @@ def main():
                     help="ignore runs/plan_cache.json and ask Gemini for a new plan")
     ap.add_argument("--no-spend", action="store_true",
                     help="only use cached Crustdata data; skip any uncached paid call (0 credits)")
+    ap.add_argument("--simulate-failures", type=int, default=0,
+                    help="DEMO: force fake 503s on the first N Gemini calls to show recover (labeled SIMULATED)")
     args = ap.parse_args()
+    SIMULATE["remaining"] = max(0, args.simulate_failures)
     CREDITS["max"] = args.max_credits
     NO_SPEND["on"] = args.no_spend
     if not os.environ.get("NEATLOGS_API_KEY"):

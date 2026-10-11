@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hiring-signal scout · neatHack 2026</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#121826;--line:#232c3d;--text:#e6eaf2;--muted:#8b95a7;--accent:#7c9cff;
+    --plan:#7c9cff;--tools:#3ecf8e;--state:#c792ea;--recover:#ffb454;--verify:#4fd1c5;--report:#e6eaf2;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+  header{padding:18px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}
+  header h1{font-size:18px;margin:0} header .tag{color:var(--muted);font-size:13px}
+  header a{margin-left:auto;color:var(--accent);text-decoration:none;font-size:13px}
+  main{display:grid;grid-template-columns:380px 1fr;gap:20px;padding:20px 28px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .panel h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  input[type=text]{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);background:#0e1420;color:var(--text);font-size:14px}
+  .toggles label{display:flex;align-items:center;gap:8px;color:var(--text);font-size:13px;margin:8px 0}
+  .toggles small{color:var(--muted)}
+  select{background:#0e1420;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px}
+  button{cursor:pointer;border:0;border-radius:8px;padding:10px 14px;font-weight:600;font-size:14px}
+  .primary{background:var(--accent);color:#0b0f17;width:100%;margin-top:14px}
+  .primary:disabled{opacity:.5;cursor:wait}
+  .ghost{background:#1b2333;color:var(--text);border:1px solid var(--line);font-size:12px;padding:6px 10px}
+  .stages{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+  .stage{flex:1;min-width:60px;text-align:center;padding:6px 4px;border-radius:8px;border:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .stage.on{color:#0b0f17;font-weight:700}
+  #timeline{max-height:340px;overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .ev{display:flex;gap:8px;padding:3px 0;border-bottom:1px dashed #1a2131}
+  .ev .t{color:var(--muted);width:42px;flex:none} .ev .s{width:62px;flex:none;font-weight:700}
+  .ev.sim .m{color:var(--recover)}
+  .meter{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .kpi{background:#0e1420;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .kpi b{display:block;font-size:18px} .kpi span{color:var(--muted);font-size:11px}
+  .note{color:var(--muted);font-size:11px;margin-top:8px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card h3{margin:0;font-size:16px} .card .dom{color:var(--muted);font-size:12px}
+  .card .why{color:#c3cad8;font-size:13px;margin:8px 0}
+  .card h4{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 4px}
+  .card ul{margin:0;padding-left:16px} .card li{margin:2px 0}
+  a{color:var(--accent)}
+  .pill{display:inline-block;background:#1b2333;border:1px solid var(--line);border-radius:999px;padding:1px 8px;font-size:11px;margin:2px 4px 2px 0}
+  .banner{background:#2a1f0d;border:1px solid #5a3d10;color:#ffd08a;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:13px}
+  .dropped li{color:#c3cad8} .dropped .r{color:var(--recover)}
+  .email{background:#0e1420;border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0}
+  .email pre{white-space:pre-wrap;font:13px/1.5 inherit;margin:6px 0}
+  .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+  .empty{color:var(--muted);text-align:center;padding:30px}
+  section{margin-bottom:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🕵️ Hiring-signal scout</h1><span class="tag">neatHack 2026 · Crustdata · Gemini · neatlogs · Entire · cfo.ai</span>
+  <a id="nl" href="https://app.neatlogs.com" target="_blank">Open neatlogs traces ↗</a>
+</header>
+<main>
+  <div>
+    <div class="panel">
+      <h2>Run</h2>
+      <label>Market</label><input id="market" type="text" value="Series A AI infra Bay Area">
+      <label>Role</label><input id="role" type="text" value="backend engineer">
+      <div class="toggles">
+        <label><input id="deep" type="checkbox"> Deep mode <small>(company enrich, ~2 credits/company)</small></label>
+        <label><input id="nospend" type="checkbox" checked> No-spend <small>(cache only, 0 credits)</small></label>
+        <label><input id="dry" type="checkbox"> Dry run <small>(mock Crustdata data)</small></label>
+        <label><input id="replan" type="checkbox"> Replan <small>(new Gemini plan)</small></label>
+        <label>Simulate Gemini failure:
+          <select id="sim"><option value="0">off</option><option value="1">1 call</option><option value="2">2 calls</option><option value="4">4 calls (forces fallback model)</option></select>
+          <small>SIMULATION, labeled in trace</small></label>
+      </div>
+      <button id="go" class="primary">Run agent</button>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Cost meter</h2>
+      <div class="meter" id="meter">
+        <div class="kpi"><b>–</b><span>Crustdata credits spent</span></div>
+        <div class="kpi"><b>–</b><span>Cache hits</span></div>
+        <div class="kpi"><b>–</b><span>Est. cost (COGS)</span></div>
+        <div class="kpi"><b>–</b><span>Price · margin</span></div>
+      </div>
+      <div class="note" id="meternote">Credit $ is an assumption ($0.10/credit). See docs/unit-economics.md.</div>
+    </div>
+  </div>
+  <div>
+    <section class="panel">
+      <h2>Agent loop (live)</h2>
+      <div class="stages">
+        <div class="stage" data-s="plan">plan</div><div class="stage" data-s="tools">tools</div>
+        <div class="stage" data-s="state">state</div><div class="stage" data-s="recover">recover</div>
+        <div class="stage" data-s="verify">verify</div><div class="stage" data-s="report">report</div>
+      </div>
+      <div id="timeline"><div class="empty">Press “Run agent” to start.</div></div>
+    </section>
+    <section>
+      <div id="banner"></div>
+      <div class="cards" id="cards"></div>
+    </section>
+    <section class="panel" id="droppedPanel" style="display:none">
+      <h2>Dropped claims (verify)</h2><ul class="dropped" id="dropped"></ul>
+    </section>
+    <section class="panel" id="outPanel" style="display:none">
+      <div class="row"><h2 style="margin:0">Outreach drafts (never sent)</h2>
+        <button class="ghost" id="draftBtn">Draft first emails</button></div>
+      <div class="note">One batched Gemini call, grounded only in cited job + funding facts. Cached. Template fallback if Gemini is unavailable. Copy and send yourself.</div>
+      <div id="emails"></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const colors = {plan:'var(--plan)',tools:'var(--tools)',state:'var(--state)',recover:'var(--recover)',verify:'var(--verify)',report:'var(--report)',info:'var(--muted)',error:'var(--err)',done:'var(--tools)'};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const link = (u, t) => u && /^https?:/.test(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>` : esc(t);
+let runId = null;
+
+function light(stage){
+  const el = document.querySelector(`.stage[data-s="${stage}"]`);
+  if (el){ el.classList.add('on'); el.style.background = colors[stage]; el.style.borderColor = colors[stage]; }
+}
+function addEvent(ev){
+  const tl = $('#timeline'); if (tl.querySelector('.empty')) tl.innerHTML = '';
+  const sim = /SIMULATED|SIMULATION/.test(ev.msg);
+  const d = document.createElement('div'); d.className = 'ev' + (sim ? ' sim' : '');
+  d.innerHTML = `<span class="t">${ev.t ?? ''}s</span><span class="s" style="color:${colors[ev.stage]||'#fff'}">${esc(ev.stage)}</span><span class="m">${esc(ev.msg)}</span>`;
+  tl.appendChild(d); tl.scrollTop = tl.scrollHeight; light(ev.stage);
+}
+function meter(e){
+  const c = e.cache || {};
+  const k = document.querySelectorAll('#meter .kpi b');
+  k[0].textContent = e.credits_spent.toFixed(2);
+  k[1].textContent = `${(c.hits||0)+(c.entity_hits||0)} · ${c.misses||0} paid`;
+  k[2].textContent = `$${e.cogs_usd.toFixed(2)}`;
+  k[3].textContent = `$${e.price_usd} · ${e.margin_pct}%`;
+  $('#meternote').innerHTML = `${e.kind} report: Crustdata $${e.crustdata_usd.toFixed(2)} (at $${e.credit_usd_assumption}/credit, assumption) + LLM ~$${e.llm_usd} at paid-tier rates. ${(c.skipped_no_spend||0)} call(s) skipped by no-spend. ${esc(e.full_cost_note)}`;
+}
+function render(r){
+  runId = r.run_id;
+  $('#banner').innerHTML = (r.dry_run ? '<div class="banner">DRY RUN: mock Crustdata data.</div>' : '') +
+    (r.llm_verify === false ? '<div class="banner">LLM verify unavailable: report built by code-only source check.</div>' : '');
+  $('#cards').innerHTML = r.cards.length ? r.cards.map(c => {
+    const f = c.firmographics;
+    const fm = v => typeof v === 'number' ? `$${(v/1e6).toFixed(1)}M` : 'n/a';
+    const pct = v => typeof v === 'number' ? `${v.toFixed(1)}%` : 'n/a';
+    return `<div class="card">
+      <div class="row"><h3>${esc(c.rank)}. ${esc(c.name)}</h3><span class="dom">${link(c.domain ? 'https://'+c.domain : '', c.domain||'')}</span></div>
+      <div class="why">${esc(c.why)}</div>
+      ${c.headcount||c.last_round ? `<span class="pill">headcount ${esc(c.headcount ?? 'n/a')}</span><span class="pill">${esc(c.last_round ?? 'round n/a')}</span>` : ''}
+      <h4>Open roles</h4><ul>${c.jobs.map(j => `<li>${link(j.url, j.title)} <span class="dom">${esc(j.location||'')}</span></li>`).join('') || '<li class="dom">none cited</li>'}</ul>
+      <h4>Decision-makers</h4><ul>${c.people.map(p => `<li>${link(p.source, p.name)} <span class="dom">${esc(p.title||'')}</span></li>`).join('') || '<li class="dom">none found</li>'}</ul>
+      ${f ? `<h4>Firmographics</h4><div><span class="pill">headcount ${esc(f.headcount ?? 'n/a')}</span><span class="pill">6m ${pct(f.headcount_growth_6m_pct)}</span><span class="pill">YoY ${pct(f.headcount_growth_yoy_pct)}</span><span class="pill">raised ${fm(f.funding_total_usd)}</span><span class="pill">${esc(f.last_round_type||'')} ${fm(f.last_round_amount_usd)} ${esc(f.last_fundraise_date||'')}</span></div><div class="dom">source: ${esc(f.source)}</div>` : ''}
+    </div>`; }).join('') : '<div class="panel empty">No verified companies.</div>';
+  const dr = r.dropped || [];
+  $('#droppedPanel').style.display = 'block';
+  $('#dropped').innerHTML = dr.length ? dr.map(d => `<li>${esc(d.text || d)} <span class="r">— ${esc(d.reason || 'unspecified')}</span></li>`).join('') : '<li class="dom">Nothing dropped.</li>';
+  meter(r.economics);
+  $('#outPanel').style.display = 'block'; $('#emails').innerHTML = '';
+}
+$('#go').onclick = () => {
+  document.querySelectorAll('.stage').forEach(s => { s.classList.remove('on'); s.style.background=''; s.style.borderColor=''; });
+  $('#timeline').innerHTML = ''; $('#cards').innerHTML = ''; $('#banner').innerHTML = '';
+  $('#droppedPanel').style.display = 'none'; $('#outPanel').style.display = 'none';
+  $('#go').disabled = true; $('#go').textContent = 'Running…';
+  const q = new URLSearchParams({market: $('#market').value, role: $('#role').value, deep: $('#deep').checked,
+    no_spend: $('#nospend').checked, dry_run: $('#dry').checked, replan: $('#replan').checked, simulate: $('#sim').value});
+  const es = new EventSource('/api/run?' + q);
+  const finish = () => { es.close(); $('#go').disabled = false; $('#go').textContent = 'Run agent'; };
+  es.onmessage = m => {
+    const ev = JSON.parse(m.data);
+    if (ev.stage === 'done'){ addEvent({stage:'report', msg:'done ✓', t:ev.t}); render(ev.result); finish(); }
+    else if (ev.stage === 'error'){ addEvent(ev); finish(); }
+    else addEvent(ev);
+  };
+  es.onerror = () => { addEvent({stage:'error', msg:'connection closed (is another run in progress?)'}); finish(); };
+};
+$('#draftBtn').onclick = async () => {
+  if (!runId) return;
+  $('#draftBtn').disabled = true; $('#emails').innerHTML = '<div class="note">Drafting…</div>';
+  try {
+    const r = await fetch('/api/outreach/' + runId, {method:'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    $('#emails').innerHTML = `<div class="note">mode: ${esc(d.mode)}${d.cached ? ' (cached)' : ''}</div>` + (d.emails||[]).map((e,i) => `
+      <div class="email"><div class="row"><b>${link(e.profile, e.person)} · ${esc(e.company)}</b><button class="ghost" data-i="${i}">Copy</button></div>
+      <div><i>${esc(e.subject)}</i></div><pre id="em${i}">${esc(e.body)}</pre>
+      <div class="dom">sources: ${(e.sources||[]).map(s => link(s, s.length > 50 ? s.slice(0,50)+'…' : s)).join(' · ') || 'n/a'}</div></div>`).join('');
+    document.querySelectorAll('#emails button[data-i]').forEach(b => b.onclick = () => {
+      const e = d.emails[b.dataset.i];
+      navigator.clipboard.writeText(`Subject: ${e.subject}\n\n${e.body}`); b.textContent = 'Copied ✓';
+    });
+  } catch (err) { $('#emails').innerHTML = `<div class="note">Drafting failed: ${esc(err.message)}</div>`; }
+  $('#draftBtn').disabled = false;
+};
+</script>
+</body>
+</html>

@@ -2,3 +2,5 @@ neatlogs[google-genai]
 google-genai
 python-dotenv
 requests
+fastapi
+uvicorn
