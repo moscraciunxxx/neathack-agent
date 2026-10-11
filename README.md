@@ -23,3 +23,10 @@ python agent.py --deep "Series A AI infra Bay Area" "backend engineer"
 ```
 
 `--deep` also calls Crustdata `/company/enrich` (headcount, 6-month/YoY headcount growth, total funding, last round) for the top `--deep-n` companies (default 5, about 2 credits each), shown in the report with the source. Every run prints estimated and actual Crustdata credits (actual comes from the `X-Credits-Used` header) and saves them as `credits_spent` in `runs/<timestamp>.json`. `--max-credits` (default 15) skips any paid call that would push the estimate over the cap. Decision-makers are looked up by the company's Crustdata ID first, then its website domain, then its name.
+
+### Caching, --replan and --no-spend
+
+- The plan Gemini makes for a market + role (ignoring case and extra spaces) is saved in `runs/plan_cache.json` and reused on reruns, together with its job-date window. That keeps the Crustdata requests identical, so they come from `runs/crustdata_cache.json`. Use `--replan` to force a new plan.
+- Decision-makers and `--deep` company data are also cached per Crustdata company ID in `runs/entity_cache.json`, so a company found under a different plan is not paid for again.
+- `--no-spend` uses cached data only and skips every paid Crustdata call that is not cached (0 credits).
+- Each run prints cache hits, paid calls and calls skipped by `--no-spend`, and saves them as `cache_stats` in `runs/<timestamp>.json`.

@@ -50,6 +50,10 @@ DEFAULT_DM_TITLES = ["CTO", "VP Engineering", "Head of Engineering", "Founder", 
 CREDITS = {"spent": 0.0, "estimated": 0.0, "max": DEFAULT_MAX_CREDITS, "skipped": []}
 RUNS_DIR = Path(__file__).parent / "runs"
 CACHE_FILE = RUNS_DIR / "crustdata_cache.json"
+PLAN_CACHE_FILE = RUNS_DIR / "plan_cache.json"      # normalized (market, role) -> plan
+ENTITY_CACHE_FILE = RUNS_DIR / "entity_cache.json"  # people:<company_id> / enrich:<company_id>
+CACHE_STATS = {"hits": 0, "misses": 0, "skipped_no_spend": 0, "entity_hits": 0}
+NO_SPEND = {"on": False}
 RECOVERY_LOG = []  # retry/fallback events, saved into run state
 
 _client = None
@@ -146,6 +150,45 @@ def _load_cache() -> dict:
         return {}
 
 
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    RUNS_DIR.mkdir(exist_ok=True)
+    path.write_text(json.dumps(data))
+
+
+def plan_key(market: str, role: str) -> str:
+    norm = lambda x: " ".join(x.lower().split())  # noqa: E731
+    return f"{norm(market)}|{norm(role)}"
+
+
+def entity_get(kind: str, company_id):
+    if company_id is None:
+        return None
+    v = _read_json(ENTITY_CACHE_FILE).get(f"{kind}:{company_id}")
+    if v is not None:
+        CACHE_STATS["entity_hits"] += 1
+        print(f"  (entity cache hit {kind}:{company_id}, 0 credits)")
+    return v
+
+
+def entity_put(kind: str, company_id, value) -> None:
+    if company_id is None or not value:
+        return
+    data = _read_json(ENTITY_CACHE_FILE)
+    data[f"{kind}:{company_id}"] = value
+    _write_json(ENTITY_CACHE_FILE, data)
+
+
+class NoSpendSkip(Exception):
+    """Raised in --no-spend mode when a paid request is not in the cache."""
+
+
 def _crust_post(path: str, body: dict) -> dict:
     """Cached: identical requests (same path + body) are served from runs/crustdata_cache.json,
     so re-running the same market/role does not re-spend credits."""
@@ -155,7 +198,13 @@ def _crust_post(path: str, body: dict) -> dict:
         print(f"  (cache hit for {path}, 0 credits)")
         out = dict(cache[ck])
         out["_credits_used"] = "0 (cached)"
+        CACHE_STATS["hits"] += 1
         return out
+    if NO_SPEND["on"]:
+        CACHE_STATS["skipped_no_spend"] += 1
+        recover_event("no_spend_skip", path=path)
+        raise NoSpendSkip(f"--no-spend: {path} not cached, skipped")
+    CACHE_STATS["misses"] += 1
     out = _crust_post_live(path, body)
     try:
         CREDITS["spent"] += float(out.get("_credits_used") or 0)
@@ -196,6 +245,8 @@ def _crust_post_live(path: str, body: dict) -> dict:
 def within_budget(kind: str, n: int = 1) -> bool:
     """Credit cap: skip a paid call if the running estimate would exceed --max-credits."""
     cost = EST[kind] * n
+    if NO_SPEND["on"]:
+        return True  # nothing paid can happen; uncached calls are skipped in _crust_post
     if CREDITS["estimated"] + cost > CREDITS["max"]:
         CREDITS["skipped"].append(f"{kind} x{n} (est {cost:.2f})")
         recover_event("credit_cap_skip", kind=kind, est=round(cost, 2),
@@ -207,7 +258,8 @@ def within_budget(kind: str, n: int = 1) -> bool:
 
 def build_job_filters(p: dict, level: int) -> dict:
     """level 0 = strict, 1 = drop funding/headcount, 2 = drop location too."""
-    since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    # 'since' is frozen into the cached plan so the request (and its cache key) stays identical on reruns
+    since = p.get("since") or (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
     titles = p.get("title_keywords") or []
     conds = [
         {"op": "or", "conditions": [
@@ -288,6 +340,11 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
     """Try company_id (exact) -> website domain -> company name. Follows Crustdata
     'condition_eliminates_all' remarks that suggest a resolved company_id."""
     cur = "experience.employment_details.current."
+    cached = None if dry_run else entity_get("people", company.get("company_id"))
+    if cached:
+        state["steps"].append({"tool": "people_search", "by": "entity_cache",
+                               "company": company.get("name"), "results": len(cached), "credits": 0})
+        return cached
     attempts = []
     if company.get("company_id"):
         attempts.append(("company_id", {"field": cur + "company_id", "type": "in",
@@ -303,6 +360,9 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
             return []
         try:
             res = people_search_once(cond, titles, dry_run, company.get("domain") or "")
+        except NoSpendSkip as e:
+            state["steps"].append({"tool": "people_search", "by": how, "skipped": str(e)})
+            continue
         except Exception as e:  # noqa: BLE001
             state["steps"].append({"tool": "people_search", "by": how, "error": str(e)})
             recover_event("people_search_error", company=company.get("name"), by=how, error=str(e)[:200])
@@ -311,6 +371,8 @@ def people_search(company: dict, titles: list, dry_run: bool, state: dict) -> li
         state["steps"].append({"tool": "people_search", "by": how, "company": company.get("name"),
                                "results": len(profiles), "credits": res.get("_credits_used")})
         if profiles:
+            if not dry_run:
+                entity_put("people", company.get("company_id"), profiles)
             return profiles
         for rm in res.get("remarks") or []:
             resol = (rm or {}).get("resolution") or {}
@@ -520,15 +582,28 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
 
 # ------------------------------------------------------------- WORKFLOW ----
 @neatlogs.span(kind="WORKFLOW", name="hiring_signal_scout")
-def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int = DEEP_TOP_N_DEFAULT) -> str:
+def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int = DEEP_TOP_N_DEFAULT,
+        replan: bool = False) -> str:
     RUNS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     state = {"market": market, "role": role, "dry_run": dry_run, "deep": deep, "model": MODEL, "steps": []}
     planned = EST["job"] + EST["people"] * MAX_PEOPLE_COMPANIES + (EST["enrich"] * deep_n if deep else 0)
     print(f"Estimated Crustdata credits (upper bound, before cache): ~{planned:.2f}; cap {CREDITS['max']}")
 
-    print("1/5 planning with Gemini...")
-    p = plan(market, role)
+    pk = plan_key(market, role)
+    plans = _read_json(PLAN_CACHE_FILE)
+    if pk in plans and not replan:
+        print("1/5 reusing cached plan for this market+role (use --replan for a new one)")
+        p = plans[pk]
+        state["plan_source"] = "cache"
+    else:
+        print("1/5 planning with Gemini...")
+        p = plan(market, role)
+        state["plan_source"] = "gemini"
+        p["since"] = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+        if not dry_run:
+            plans[pk] = p
+            _write_json(PLAN_CACHE_FILE, plans)
     state["plan"] = p
 
     print("2/5 searching Crustdata jobs...")
@@ -566,16 +641,26 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
     if deep:
         top = [c for c in ranked[:deep_n] if c.get("company_id")]
         print(f"3b deep mode: enriching {len(top)} companies (headcount, growth, funding)...")
-        if top and (dry_run or within_budget("enrich", len(top))):
+        by_id = {}
+        if not dry_run:
+            for c in top:
+                d = entity_get("enrich", c["company_id"])
+                if d:
+                    by_id[c["company_id"]] = d
+        need = [c for c in top if c["company_id"] not in by_id]
+        if top and (not need or dry_run or within_budget("enrich", len(need))):
             try:
-                res = company_enrich([c["company_id"] for c in top], dry_run)
-                state["steps"].append({"tool": "company_enrich", "n": len(top),
-                                       "credits": res.get("_credits_used")})
-                by_id = {}
-                for r in res.get("results", []):
-                    for m in (r.get("matches") or [])[:1]:
-                        d = m.get("company_data") or {}
-                        by_id[d.get("crustdata_company_id")] = d
+                if need:
+                    res = company_enrich([c["company_id"] for c in need], dry_run)
+                    state["steps"].append({"tool": "company_enrich", "n": len(need),
+                                           "credits": res.get("_credits_used")})
+                    for r in res.get("results", []):
+                        for m in (r.get("matches") or [])[:1]:
+                            d = m.get("company_data") or {}
+                            by_id[d.get("crustdata_company_id")] = d
+                            if not dry_run:
+                                entity_put("enrich", d.get("crustdata_company_id"), d)
+                state["steps"].append({"tool": "company_enrich", "from_entity_cache": len(top) - len(need)})
                 for c in top:
                     d = by_id.get(c["company_id"])
                     if not d:
@@ -591,6 +676,8 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
                         "last_round_amount_usd": fu.get("last_round_amount_usd"),
                         "last_fundraise_date": fu.get("last_fundraise_date"),
                     }
+            except NoSpendSkip as e:
+                state["steps"].append({"tool": "company_enrich", "skipped": str(e)})
             except Exception as e:  # noqa: BLE001
                 state["steps"].append({"tool": "company_enrich", "error": str(e)})
                 recover_event("company_enrich_error", error=str(e)[:200])
@@ -603,6 +690,8 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
     state["credits_spent"] = round(CREDITS["spent"], 3)
     state["credits_estimated"] = round(CREDITS["estimated"], 3)
     state["credits_skipped_by_cap"] = CREDITS["skipped"]
+    state["cache_stats"] = dict(CACHE_STATS)
+    state["no_spend"] = NO_SPEND["on"]
     result["_firmo"] = {c["name"]: c["firmographics"] for c in ranked if c.get("firmographics")}
     result["_credits"] = (state["credits_estimated"], state["credits_spent"])
 
@@ -612,7 +701,9 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
     (RUNS_DIR / f"{stamp}.md").write_text(report)
     print(f"\nSaved runs/{stamp}.json and runs/{stamp}.md")
     print(f"Crustdata credits: estimated {state['credits_estimated']:.2f}, "
-          f"actual {state['credits_spent']:.2f} (from X-Credits-Used; cache hits = 0)\n")
+          f"actual {state['credits_spent']:.2f} (from X-Credits-Used)")
+    print(f"Cache: {CACHE_STATS['hits']} request hit(s), {CACHE_STATS['entity_hits']} company hit(s), "
+          f"{CACHE_STATS['misses']} paid call(s), {CACHE_STATS['skipped_no_spend']} skipped by --no-spend\n")
     return report
 
 
@@ -654,12 +745,17 @@ def main():
                     help=f"companies to enrich in --deep mode (default {DEEP_TOP_N_DEFAULT})")
     ap.add_argument("--max-credits", type=float, default=DEFAULT_MAX_CREDITS,
                     help=f"hard cap on estimated Crustdata credits per run (default {DEFAULT_MAX_CREDITS})")
+    ap.add_argument("--replan", action="store_true",
+                    help="ignore runs/plan_cache.json and ask Gemini for a new plan")
+    ap.add_argument("--no-spend", action="store_true",
+                    help="only use cached Crustdata data; skip any uncached paid call (0 credits)")
     args = ap.parse_args()
     CREDITS["max"] = args.max_credits
+    NO_SPEND["on"] = args.no_spend
     if not os.environ.get("NEATLOGS_API_KEY"):
         print("warning: NEATLOGS_API_KEY not set; traces will NOT be exported")
     try:
-        print(run(args.market, args.role, args.dry_run, args.deep, args.deep_n))
+        print(run(args.market, args.role, args.dry_run, args.deep, args.deep_n, args.replan))
     finally:
         neatlogs.flush()
         neatlogs.shutdown()
