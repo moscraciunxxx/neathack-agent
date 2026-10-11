@@ -184,7 +184,7 @@ $('#draftBtn').onclick = async () => {
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.status);
     $('#emails').innerHTML = `<div class="note">mode: ${esc(d.mode)}${d.cached ? ' (cached)' : ''}</div>` + (d.emails||[]).map((e,i) => `
-      <div class="email"><div class="row"><b>${link(e.profile, e.person)} · ${esc(e.company)}</b><button class="ghost" data-i="${i}">Copy</button></div>
+      <div class="email"><div class="row"><b>${link(e.profile, e.person)}</b> <span class="dom">${esc(e.title||"")} · ${esc(e.company)} · ${esc(e.generated_by)}</span><button class="ghost" data-i="${i}">Copy</button></div>
       <div><i>${esc(e.subject)}</i></div><pre id="em${i}">${esc(e.body)}</pre>
       <div class="dom">sources: ${(e.sources||[]).map(s => link(s, s.length > 50 ? s.slice(0,50)+'…' : s)).join(' · ') || 'n/a'}</div></div>`).join('');
     document.querySelectorAll('#emails button[data-i]').forEach(b => b.onclick = () => {

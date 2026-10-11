@@ -138,11 +138,8 @@ def outreach_drafts(run_id: str):
     if not RUN_LOCK.acquire(blocking=False):
         raise HTTPException(409, "A run is in progress")
     try:
-        out = outreach.draft(st)
-        profiles = {p.get("name"): p.get("url") for c in st.get("evidence") or [] for p in c.get("people", [])}
-        for e in out.get("emails", []):
-            e["profile"] = profiles.get(e.get("person"))
-        return out
+        # exactly the decision-makers rendered on the cards
+        return outreach.draft(summarize(st)["cards"], st.get("role", ""))
     finally:
         try:
             neatlogs.flush()
