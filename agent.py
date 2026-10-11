@@ -157,7 +157,45 @@ def ask_json(prompt: str, temperature: float = 0.2) -> dict:
                 recover_event("gemini_retry", model=model, attempt=attempt + 1,
                               wait_s=delay, error=last_err)
                 time.sleep(delay)
-    raise RuntimeError(f"Gemini unavailable after retries + fallback: {last_err}")
+    if os.environ.get("LITELLM_API_KEY"):
+        recover_event("provider_switch", from_provider="gemini", to_provider=f"litellm/{LITELLM_MODEL}",
+                      reason=last_err)
+        for attempt in range(2):
+            try:
+                return _litellm_json(prompt, temperature)
+            except Exception as e:  # noqa: BLE001
+                last_err = f"litellm: {str(e)[:200]}"
+                if attempt == 0:
+                    recover_event("litellm_retry", model=LITELLM_MODEL, error=last_err)
+                    time.sleep(3)
+    raise RuntimeError(f"All LLM providers unavailable (Gemini retries + fallback, LiteLLM): {last_err}")
+
+
+# --- optional 3rd provider: neatHack LiteLLM proxy (OpenAI-compatible; Nova / Claude) ---
+LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "https://litellm.vision.aivar.app/v1")
+LITELLM_MODEL = os.environ.get("LITELLM_MODEL", "claude-haiku")
+_litellm = None
+
+
+def _strip_fences(t: str) -> str:
+    t = (t or "").strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+        t = t.rsplit("```", 1)[0]
+    i, j = t.find("{"), t.rfind("}")
+    return t[i:j + 1] if i != -1 and j > i else t
+
+
+def _litellm_json(prompt: str, temperature: float = 0.2) -> dict:
+    global _litellm
+    if _litellm is None:
+        from openai import OpenAI  # optional dependency, only needed for this fallback
+        _litellm = neatlogs.wrap(OpenAI(base_url=LITELLM_BASE_URL, api_key=os.environ["LITELLM_API_KEY"]))
+    resp = _litellm.chat.completions.create(
+        model=LITELLM_MODEL, temperature=temperature, max_tokens=8000,
+        messages=[{"role": "system", "content": "Reply with one valid JSON object only. No prose, no code fences."},
+                  {"role": "user", "content": prompt}])
+    return json.loads(_strip_fences(resp.choices[0].message.content))
 
 
 # ---------------------------------------------------------------- PLAN -----
@@ -498,6 +536,15 @@ def _source_in_company_results(source: str, company_ev: dict | None) -> bool:
     return cid is not None and str(cid) in blob
 
 
+def _strict_grounded(source: str, company_ev: dict) -> bool:
+    """For the score: the cited URL appears in this company's Crustdata data, or the citation
+    names this company's Crustdata company_id (enrich/firmographic claims)."""
+    if not source or not company_ev:
+        return False
+    cid = company_ev.get("company_id")
+    return source in json.dumps(company_ev) or (cid is not None and str(cid) in source)
+
+
 def _normalize_dropped(items) -> list:
     """Coerce LLM dropped entries into {text, reason} dicts."""
     out = []
@@ -614,10 +661,10 @@ EVIDENCE:
         if f["status"] == "off_market":
             dropped.append({"text": f"{f['name']} (whole company)", "reason": f"off-market: {f['reason']}"})
     out["companies"] = [c for c in out.get("companies", []) if c.get("name") not in off]
-    # Unconfirmed companies the LLM left out of its list: keep them, built from evidence.
+    # Fit/unconfirmed companies the LLM left out of its list: keep them, built from evidence.
     have = {c.get("name") for c in out["companies"]}
     missing = [c for c in companies if c.get("name") not in have and c.get("name") not in off
-               and any(f["name"] == c.get("name") and f["status"] == "unconfirmed" for f in out["market_fit"])]
+               and any(f["name"] == c.get("name") and f["status"] != "off_market" for f in out["market_fit"])]
     if missing:
         extra = code_only_result(missing)["companies"]
         for k, c in enumerate(extra):
@@ -626,12 +673,16 @@ EVIDENCE:
     for c in out.get("companies", []):
         ev = _evidence_company(c, companies)
         keep = []
+        cited = total = 0
         for cl in c.get("claims", []):
             src = (cl.get("source") or "").strip()
             text = cl.get("text") or ""
+            total += 1
+            cl["grounded"] = _strict_grounded(src, ev)
+            cited += cl["grounded"]
             if not src:
                 dropped.append({"text": text or "(empty claim)", "reason": "missing source"})
-            elif _source_in_company_results(src, ev):
+            elif cl["grounded"] or _source_in_company_results(src, ev):
                 keep.append(cl)
             else:
                 # Source present but not found in results — still keep (only missing drops).
@@ -641,14 +692,27 @@ EVIDENCE:
         for d in c.get("decision_makers", []):
             src = (d.get("source") or "").strip()
             label = d.get("name") or "(unnamed person)"
+            total += 1
+            d["grounded"] = _strict_grounded(src, ev)
+            cited += d["grounded"]
             if not src:
                 dropped.append({"text": label, "reason": "missing source"})
             elif _source_in_company_results(src, ev) or src:
                 dms.append(d)
         c["decision_makers"] = dms
+        c["grounding"] = {"cited": cited, "total": total,
+                          "pct": round(100 * cited / total, 1) if total else None}
     out["companies"] = [c for c in out.get("companies", []) if c["claims"]]
     out["dropped"] = dropped
+    out["grounding"] = grounding_summary(out["companies"])
     return out
+
+
+def grounding_summary(companies: list) -> dict:
+    """Run-level grounded-claims score: claims whose source appears in that company's Crustdata data."""
+    cited = sum((c.get("grounding") or {}).get("cited", 0) for c in companies)
+    total = sum((c.get("grounding") or {}).get("total", 0) for c in companies)
+    return {"cited": cited, "total": total, "pct": round(100 * cited / total, 1) if total else None}
 
 
 def code_only_result(companies: list) -> dict:
@@ -678,6 +742,9 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
     for c in sorted(result.get("companies", []), key=lambda x: x.get("rank", 99)):
         lines.append(f"## {c.get('rank')}. {c.get('name')} ({c.get('domain', '')})")
         lines.append(c.get("why", ""))
+        g = c.get("grounding") or {}
+        if g.get("total"):
+            lines.append(f"_Grounded claims: {g['cited']}/{g['total']} ({g['pct']}%) cite a source found in this company's Crustdata data._")
         for cl in c["claims"]:
             lines.append(f"- {cl['text']} [source]({cl['source']})")
         f = (result.get("_firmo") or {}).get(c.get("name"))
@@ -708,6 +775,9 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
     if result.get("_credits"):
         lines.append(f"_Crustdata credits this run: estimated {result['_credits'][0]:.2f}, "
                      f"actual {result['_credits'][1]:.2f}._")
+    g = result.get("grounding") or {}
+    if g.get("total"):
+        lines.append(f"**Run grounded-claims score: {g['cited']}/{g['total']} ({g['pct']}%)**")
     if result.get("dropped"):
         lines.append("## Dropped claims")
         for d in result["dropped"]:
@@ -870,6 +940,7 @@ def run(market: str, role: str, dry_run: bool, deep: bool = False, deep_n: int =
         else:
             emit("recover", "  broadening found no new companies (or budget/no-spend blocked it)")
     state["result"] = result
+    state["grounding"] = result.get("grounding")
     state["recovery_events"] = RECOVERY_LOG
     state["credits_spent"] = round(CREDITS["spent"], 3)
     state["credits_estimated"] = round(CREDITS["estimated"], 3)

@@ -1,5 +1,36 @@
 # neathack-agent
 
+## For judges
+
+**Hiring-signal scout** is for sales and recruiting reps who need to know *who is hiring right now, for what, and who owns the hire*. You give it a market ("Series A AI infra Bay Area") and a role ("backend engineer"). It returns companies with live openings, their decision-makers (LinkedIn), headcount and funding data, and a short first email per person. Every claim cites its Crustdata source, and a grounded-claims score is shown. It recovers on its own from LLM outages, empty searches and off-market results. A deep report costs about $1.38 to make (cfo.ai-modelled price $12, 88.5% margin).
+
+```mermaid
+flowchart LR
+  U[market + role] --> P[plan<br/>Gemini → filters<br/>plan cache]
+  P --> J[Crustdata job search]
+  J --> PE[people search + company enrich<br/>credit cap, entity cache]
+  PE --> S[(state + caches<br/>runs/*.json)]
+  S --> V[verify<br/>market fit, temp 0<br/>+ source grounding score]
+  V -->|kept < 3| R
+  P -.->|503/429| R[recover<br/>retry → Flash-Lite → LiteLLM → code-only<br/>broaden_market, filter broadening]
+  R --> P
+  V --> O[report cards + dropped claims<br/>+ outreach drafts, never sent]
+  NL[[neatlogs: traces every LLM / TOOL / AGENT / recover span]] -.-> P & J & PE & V & R & O
+  EN[[Entire: checkpoint per AI commit + Graph search]] -.-> CODE[(repo)]
+  CF[[cfo.ai Ari: COGS → pricing, runway, scenarios]] -.-> O
+```
+
+**Quickstart**
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # add NEATLOGS_API_KEY, CRUSTDATA_API_KEY, GEMINI_API_KEY (LITELLM_API_KEY optional)
+python app.py          # open http://localhost:8000 (tick Dry run for mock data / 0 credits)
+```
+
+**Proof:** [docs/EVIDENCE.md](docs/EVIDENCE.md) (before/after, failures and recoveries, Entire checkpoints, cfo.ai results) · [docs/demo-script.md](docs/demo-script.md) · [docs/unit-economics.md](docs/unit-economics.md)
+
+
 neathack-agent is a hiring-signal scout built for neatHack 2026. Give it a market (e.g. Series A–B AI infra in the Bay Area) and a role, and it returns a ranked list of companies hiring for that role, key decision-makers, and a source for every claim. Built with Crustdata (data), neatlogs (tracing), Entire (checkpoints), and cfo.ai (unit economics).
 
 ## How it works
@@ -45,3 +76,7 @@ For rehearsal (0 Crustdata credits, shows recover/fallback on camera): check **N
 Also on the form: market, role, **Deep**, **Dry run** (mock data), **Replan**. The UI streams the agent loop over SSE, renders company cards (jobs, decision-makers, firmographics), a cost meter, outreach drafts (copy only — nothing is sent), and a link to neatlogs traces.
 
 CLI equivalent: `python agent.py "<market>" "<role>" --no-spend --simulate-failures 2`.
+
+### LLM provider fallback chain
+
+`GEMINI_MODEL` → `GEMINI_FALLBACK_MODEL` → optional neatHack **LiteLLM** proxy (OpenAI-compatible; set `LITELLM_API_KEY`, default `LITELLM_BASE_URL=https://litellm.vision.aivar.app/v1`, `LITELLM_MODEL=claude-haiku`; also nova-micro/lite/pro, nova-2-lite, claude-sonnet-4.6, claude-opus-4.6) → code-only verify. Each switch is logged as `[recover] provider_switch` and traced in neatlogs. The LiteLLM key has a shared $20 / 30-day team budget.

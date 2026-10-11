@@ -81,6 +81,7 @@
         <div class="kpi"><b>–</b><span>Cache hits</span></div>
         <div class="kpi"><b>–</b><span>COGS this run (base $0.10/credit)</span></div>
         <div class="kpi"><b>–</b><span>PAYG price · gross margin</span></div>
+        <div class="kpi" style="grid-column:span 2"><b id="gscore">–</b><span>Grounded claims (source found in Crustdata data)</span></div>
       </div>
       <div class="note" id="meternote">Pricing from cfo.ai plan. See docs/unit-economics.md.</div>
     </div>
@@ -151,6 +152,7 @@ function render(r){
     return `<div class="card">
       <div class="row"><h3>${esc(c.rank)}. ${esc(c.name)}${c.fit_status === 'unconfirmed' ? ' <span class="pill" style="border-color:var(--recover);color:var(--recover)">fit unconfirmed</span>' : ''}</h3><span class="dom">${link(c.domain ? 'https://'+c.domain : '', c.domain||'')}</span></div>
       <div class="why">${esc(c.why)}</div>
+      ${c.grounding && c.grounding.total ? `<span class="pill" style="border-color:var(--verify);color:var(--verify)">grounded ${c.grounding.cited}/${c.grounding.total} (${c.grounding.pct}%)</span>` : ''}
       ${c.headcount||c.last_round ? `<span class="pill">headcount ${esc(c.headcount ?? 'n/a')}</span><span class="pill">${esc(c.last_round ?? 'round n/a')}</span>` : ''}
       <h4>Open roles</h4><ul>${c.jobs.map(j => `<li>${link(j.url, j.title)} <span class="dom">${esc(j.location||'')}</span></li>`).join('') || '<li class="dom">none cited</li>'}</ul>
       <h4>Decision-makers</h4><ul>${c.people.map(p => `<li>${link(p.source, p.name)} <span class="dom">${esc(p.title||'')}</span></li>`).join('') || `<li class="dom">${esc(c.people_label || 'none found')}</li>`}</ul>
@@ -161,6 +163,8 @@ function render(r){
   $('#droppedPanel').style.display = 'block';
   $('#dropped').innerHTML = dr.length ? dr.map(d => `<li>${esc(d.text || d)} <span class="r">— ${esc(d.reason || 'unspecified')}</span></li>`).join('') : '<li class="dom">Nothing dropped.</li>';
   meter(r.economics);
+  const g = r.grounding || {};
+  $('#gscore').textContent = g.total ? `${g.cited}/${g.total} · ${g.pct}%` : 'n/a';
   $('#outPanel').style.display = 'block'; $('#emails').innerHTML = '';
 }
 $('#go').onclick = () => {

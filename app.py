@@ -78,6 +78,7 @@ def summarize(state: dict) -> dict:
                       "people_label": agent.PEOPLE_STATUS_LABEL.get(e.get("people_status") or "none_found"),
                       "market_fit": next((f["reason"] for f in res.get("market_fit") or []
                                           if f.get("name") == c.get("name")), None),
+                      "grounding": c.get("grounding"),
                       "fit_status": next((f.get("status") for f in res.get("market_fit") or []
                                           if f.get("name") == c.get("name")), None)})
     return {"run_id": state.get("run_id"), "market": state.get("market"), "role": state.get("role"),
@@ -85,7 +86,7 @@ def summarize(state: dict) -> dict:
             "plan": state.get("plan"), "plan_source": state.get("plan_source"),
             "cards": cards, "dropped": res.get("dropped", []),
             "recovery_events": state.get("recovery_events", []),
-            "economics": economics(state), "neatlogs_url": NEATLOGS_URL,
+            "economics": economics(state), "grounding": res.get("grounding"), "neatlogs_url": NEATLOGS_URL,
             "report_md": agent.LAST_RUN.get("report")}
 
 
