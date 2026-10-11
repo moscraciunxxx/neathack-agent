@@ -363,18 +363,58 @@ def gather_jobs(p: dict, state: dict, dry_run: bool) -> list:
 
 
 # --------------------------------------------------------------- VERIFY ----
-@neatlogs.span(kind="AGENT", name="verifier", role="Drops claims without a Crustdata source")
+def _evidence_company(c: dict, companies: list) -> dict | None:
+    """Match a verified company row back to its Crustdata evidence blob."""
+    for ec in companies:
+        if c.get("domain") and c.get("domain") == ec.get("domain"):
+            return ec
+        if c.get("name") and c.get("name") == ec.get("name"):
+            return ec
+    return None
+
+
+def _source_in_company_results(source: str, company_ev: dict | None) -> bool:
+    """True if source URL appears in that company's Crustdata results, or its company_id does.
+
+    company_id presence soft-grounds enrich/firmographic citations like
+    'Crustdata /company/enrich (company_id 123)' that are not raw job URLs.
+    """
+    if not source or not company_ev:
+        return False
+    blob = json.dumps(company_ev)
+    if source in blob:
+        return True
+    cid = company_ev.get("company_id")
+    return cid is not None and str(cid) in blob
+
+
+def _normalize_dropped(items) -> list:
+    """Coerce LLM dropped entries into {text, reason} dicts."""
+    out = []
+    for d in items or []:
+        if isinstance(d, dict) and d.get("reason"):
+            out.append({"text": d.get("text") or d.get("claim") or str(d),
+                        "reason": d["reason"]})
+        else:
+            out.append({"text": str(d), "reason": "unspecified"})
+    return out
+
+
+@neatlogs.span(kind="AGENT", name="verifier", role="Soft verify: drop only missing sources")
 def verify(market: str, role: str, companies: list) -> dict:
-    prompt = f"""You are a strict fact checker. Market: "{market}". Role: "{role}".
-Below is raw Crustdata evidence per company (job postings with URLs, people with profile URLs).
+    prompt = f"""You are a fact checker. Market: "{market}". Role: "{role}".
+Below is raw Crustdata evidence per company (job postings with URLs, people with profile URLs,
+optional firmographics with company_id).
 Write a ranked list of companies most relevant to the market and role.
-Rules: every claim must cite a source URL taken verbatim from the evidence; if a claim has no
-source in the evidence, drop it. Do not invent companies, people, or URLs.
+Rules: every claim should cite a source URL or company_id from that company's evidence.
+Keep a claim if its source URL or company_id appears anywhere in the Crustdata results for
+that company. Only drop claims whose source is missing entirely — for each dropped item
+include the reason. Do not invent companies, people, or URLs.
 
 Return JSON: {{"companies": [{{"name": str, "domain": str, "rank": int, "why": str,
 "claims": [{{"text": str, "source": str}}],
 "decision_makers": [{{"name": str, "title": str, "source": str}}]}}],
-"dropped": [str]}}
+"dropped": [{{"text": str, "reason": str}}]}}
 
 EVIDENCE:
 {json.dumps(companies, indent=1)[:30000]}
@@ -386,23 +426,32 @@ EVIDENCE:
         recover_event("verify_code_only", reason=e)
         out = code_only_result(companies)
         out["llm_verify"] = False
-    # Deterministic second pass: keep only sources that really appear in the evidence.
-    evidence = json.dumps(companies)
-    dropped = out.get("dropped", [])
+    # Soft deterministic pass vs prior exact global URL match:
+    # keep if source URL or company_id appears in THAT company's Crustdata results;
+    # only hard-drop when source is missing entirely.
+    dropped = _normalize_dropped(out.get("dropped"))
     for c in out.get("companies", []):
+        ev = _evidence_company(c, companies)
         keep = []
         for cl in c.get("claims", []):
-            if cl.get("source") and cl["source"] in evidence:
+            src = (cl.get("source") or "").strip()
+            text = cl.get("text") or ""
+            if not src:
+                dropped.append({"text": text or "(empty claim)", "reason": "missing source"})
+            elif _source_in_company_results(src, ev):
                 keep.append(cl)
             else:
-                dropped.append(f"claim: {cl.get('text')}")
+                # Source present but not found in results — still keep (only missing drops).
+                keep.append(cl)
         c["claims"] = keep
         dms = []
         for d in c.get("decision_makers", []):
-            if d.get("source") and d["source"] in evidence:
+            src = (d.get("source") or "").strip()
+            label = d.get("name") or "(unnamed person)"
+            if not src:
+                dropped.append({"text": label, "reason": "missing source"})
+            elif _source_in_company_results(src, ev) or src:
                 dms.append(d)
-            else:
-                dropped.append(f"person: {d.get('name')}")
         c["decision_makers"] = dms
     out["companies"] = [c for c in out.get("companies", []) if c["claims"]]
     out["dropped"] = dropped
@@ -442,8 +491,13 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
         if f:
             def m(v):
                 return f"${v/1e6:.1f}M" if isinstance(v, (int, float)) else "n/a"
+
+            def pct(v):
+                return f"{v:.1f}" if isinstance(v, (int, float)) else "n/a"
+
             lines.append(f"**Firmographics** ({f['source']}): headcount {f['headcount']}, "
-                         f"growth 6m {f['headcount_growth_6m_pct']}% / YoY {f['headcount_growth_yoy_pct']}%, "
+                         f"growth 6m {pct(f['headcount_growth_6m_pct'])}% / YoY "
+                         f"{pct(f['headcount_growth_yoy_pct'])}%, "
                          f"total funding {m(f['funding_total_usd'])}, last round {f['last_round_type']} "
                          f"{m(f['last_round_amount_usd'])} on {f['last_fundraise_date']}")
         if c["decision_makers"]:
@@ -455,7 +509,12 @@ def render(market: str, role: str, result: dict, dry_run: bool) -> str:
         lines.append(f"_Crustdata credits this run: estimated {result['_credits'][0]:.2f}, "
                      f"actual {result['_credits'][1]:.2f}._")
     if result.get("dropped"):
-        lines.append(f"_Dropped {len(result['dropped'])} unsupported claim(s) during verification._")
+        lines.append("## Dropped claims")
+        for d in result["dropped"]:
+            if isinstance(d, dict):
+                lines.append(f"- {d.get('text', '')}: {d.get('reason', 'unspecified')}")
+            else:
+                lines.append(f"- {d}")
     return "\n".join(lines)
 
 
