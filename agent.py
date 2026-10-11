@@ -27,17 +27,23 @@ neatlogs.init(
     tags=["neathack-2026", "v1"],
 )
 
+import hashlib  # noqa: E402
 import requests  # noqa: E402
 from google import genai  # noqa: E402  (import after neatlogs.init)
 from google.genai import types  # noqa: E402
+from google.genai import errors as genai_errors  # noqa: E402
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+RETRY_DELAYS = [5, 15, 30]  # seconds between attempts on 429/500/503
 CRUST_BASE = "https://api.crustdata.com"
 CRUST_VERSION = "2025-11-01"
 MAX_JOBS = 10      # job/search: 0.03 credits per result
 MAX_PEOPLE = 5     # person/search: ~0.03-0.13 credits per result (basic fields)
 MAX_PEOPLE_COMPANIES = 3
 RUNS_DIR = Path(__file__).parent / "runs"
+CACHE_FILE = RUNS_DIR / "crustdata_cache.json"
+RECOVERY_LOG = []  # retry/fallback events, saved into run state
 
 _client = None
 
@@ -52,22 +58,58 @@ def gemini():
     return _client
 
 
+def recover_event(what: str, **info) -> None:
+    """Visible print + a neatlogs span so retries/fallbacks show up as 'recover' in traces."""
+    msg = f"  [recover] {what} " + " ".join(f"{k}={v}" for k, v in info.items())
+    print(msg)
+    RECOVERY_LOG.append({"event": what, **{k: str(v) for k, v in info.items()}})
+    with neatlogs.trace(f"recover:{what}", kind="CHAIN") as span:
+        span.set_attribute("neatlogs.recover.event", what)
+        for k, v in info.items():
+            span.set_attribute(f"neatlogs.recover.{k}", str(v)[:500])
+
+
+def _is_transient(e: Exception) -> bool:
+    code = getattr(e, "code", None)
+    if isinstance(e, genai_errors.ServerError):
+        return True
+    return code in (429, 500, 502, 503, 504)
+
+
+def _generate_json(model: str, prompt: str) -> dict:
+    resp = gemini().models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0.2
+        ),
+    )
+    return json.loads(resp.text)
+
+
 def ask_json(prompt: str) -> dict:
-    """One Gemini call that must return JSON. Retries once on bad JSON."""
+    """Gemini call that must return JSON.
+    Main model: up to len(RETRY_DELAYS)+1 attempts with backoff on 429/5xx or bad JSON,
+    then the same on FALLBACK_MODEL. Raises RuntimeError if everything fails."""
     last_err = None
-    for _ in range(2):
-        resp = gemini().models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", temperature=0.2
-            ),
-        )
-        try:
-            return json.loads(resp.text)
-        except (json.JSONDecodeError, TypeError) as e:
-            last_err = e
-    raise RuntimeError(f"Gemini did not return JSON: {last_err}")
+    for model in (MODEL, FALLBACK_MODEL):
+        if model != MODEL:
+            recover_event("fallback_model", from_model=MODEL, to_model=model, reason=last_err)
+        for attempt in range(len(RETRY_DELAYS) + 1):
+            try:
+                return _generate_json(model, prompt)
+            except (json.JSONDecodeError, TypeError) as e:
+                last_err = f"bad JSON: {e}"
+            except genai_errors.APIError as e:
+                last_err = f"{getattr(e, 'code', '?')} {str(e)[:200]}"
+                if not _is_transient(e):
+                    break  # e.g. 404 model not found / 400: go straight to fallback
+            if attempt < len(RETRY_DELAYS):
+                delay = RETRY_DELAYS[attempt]
+                recover_event("gemini_retry", model=model, attempt=attempt + 1,
+                              wait_s=delay, error=last_err)
+                time.sleep(delay)
+    raise RuntimeError(f"Gemini unavailable after retries + fallback: {last_err}")
 
 
 # ---------------------------------------------------------------- PLAN -----
@@ -90,7 +132,31 @@ Return JSON with exactly these keys:
 
 
 # --------------------------------------------------------------- TOOLS -----
+def _load_cache() -> dict:
+    try:
+        return json.loads(CACHE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def _crust_post(path: str, body: dict) -> dict:
+    """Cached: identical requests (same path + body) are served from runs/crustdata_cache.json,
+    so re-running the same market/role does not re-spend credits."""
+    ck = hashlib.sha256((path + json.dumps(body, sort_keys=True)).encode()).hexdigest()
+    cache = _load_cache()
+    if ck in cache:
+        print(f"  (cache hit for {path}, 0 credits)")
+        out = dict(cache[ck])
+        out["_credits_used"] = "0 (cached)"
+        return out
+    out = _crust_post_live(path, body)
+    cache[ck] = out
+    RUNS_DIR.mkdir(exist_ok=True)
+    CACHE_FILE.write_text(json.dumps(cache))
+    return out
+
+
+def _crust_post_live(path: str, body: dict) -> dict:
     key = os.environ.get("CRUSTDATA_API_KEY")
     if not key:
         raise RuntimeError("CRUSTDATA_API_KEY missing in .env")
@@ -106,7 +172,7 @@ def _crust_post(path: str, body: dict) -> dict:
     )
     if r.status_code == 429:
         time.sleep(5)
-        return _crust_post(path, body)
+        return _crust_post_live(path, body)
     if r.status_code >= 400:
         raise RuntimeError(f"Crustdata {path} {r.status_code}: {r.text[:300]}")
     out = r.json()
@@ -221,7 +287,13 @@ Return JSON: {{"companies": [{{"name": str, "domain": str, "rank": int, "why": s
 EVIDENCE:
 {json.dumps(companies, indent=1)[:30000]}
 """
-    out = ask_json(prompt)
+    try:
+        out = ask_json(prompt)
+        out["llm_verify"] = True
+    except RuntimeError as e:
+        recover_event("verify_code_only", reason=e)
+        out = code_only_result(companies)
+        out["llm_verify"] = False
     # Deterministic second pass: keep only sources that really appear in the evidence.
     evidence = json.dumps(companies)
     dropped = out.get("dropped", [])
@@ -245,10 +317,28 @@ EVIDENCE:
     return out
 
 
+def code_only_result(companies: list) -> dict:
+    """No-LLM fallback: every claim is built straight from Crustdata evidence with its URL."""
+    out = {"companies": [], "dropped": []}
+    for i, c in enumerate(companies, 1):
+        claims = [{"text": f"Hiring: {j['title']} ({j.get('location') or 'n/a'}, posted {j.get('posted')})",
+                   "source": j["url"]} for j in c["jobs"] if j.get("url")]
+        dms = [{"name": p["name"], "title": p.get("title") or "", "source": p["url"]}
+               for p in c["people"] if p.get("url")]
+        out["companies"].append({"name": c["name"], "domain": c.get("domain") or "", "rank": i,
+                                 "why": f"{len(c['jobs'])} matching open role(s); "
+                                        f"headcount {c.get('headcount')}, last round {c.get('last_round')}.",
+                                 "claims": claims, "decision_makers": dms})
+    return out
+
+
 # --------------------------------------------------------------- REPORT ----
 def render(market: str, role: str, result: dict, dry_run: bool) -> str:
     lines = [f"# Hiring-signal scout: {role} in {market}",
              f"_Generated {datetime.now():%Y-%m-%d %H:%M}{' (DRY RUN, mock data)' if dry_run else ''}_", ""]
+    if result.get("llm_verify") is False:
+        lines += ["> **LLM verify unavailable** (Gemini overloaded). Ranking is by number of open roles; "
+                  "every line below is copied directly from Crustdata with its source.", ""]
     if not result.get("companies"):
         lines.append("No verified companies found.")
     for c in sorted(result.get("companies", []), key=lambda x: x.get("rank", 99)):
@@ -320,6 +410,7 @@ def run(market: str, role: str, dry_run: bool) -> str:
     print("4/5 verifying claims with Gemini...")
     result = verify(market, role, ranked) if ranked else {"companies": [], "dropped": []}
     state["result"] = result
+    state["recovery_events"] = RECOVERY_LOG
 
     print("5/5 writing report...")
     report = render(market, role, result, dry_run)
