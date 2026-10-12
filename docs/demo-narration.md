@@ -20,8 +20,8 @@ Voice-over for the neatHack demo video (≤3 min). Narrated in Vitalie's own voi
 
 9. **[Entire checkpoints / Entire Graph]** Entire checkpointed every AI-written commit with the session behind it, and Entire Graph found the right functions before each edit.
 
-10. **[cfo.ai tier table + plan assumptions]** cfo.ai turned my measured run costs into unit economics. A report costs about ten cents to make and sells for twelve dollars.
+10. **[cfo.ai tier table + plan assumptions]** Then, cfo.ai turned my measured run costs into unit economics. A fresh deep report costs about a dollar thirty-five to make and sells for twelve dollars.
 
-11. **[cfo.ai cash chart + scenario comparison]** Its downside case showed margins breaking, so I cut the deep report allowances. Margin now stays above seventy-five percent in every case.
+11. **[cfo.ai cash chart + scenario comparison]** Its downside case showed margins breaking, so I cut the deep report allowances. Margin now stays above seventy-five percent, in every case.
 
 12. **[End card: repo URL]** The code and evidence are at github.com/moscraciunxxx/neathack-agent. Thanks for watching.

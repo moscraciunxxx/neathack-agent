@@ -13,7 +13,7 @@ All numbers come from real runs on the user's Mac (files in `runs/`, not committ
 | Outreach | Signed "Best, Alex" (invented sender), duplicates, people not on the cards | Exactly the people on the cards, deduped, always "Best, <your name>", each with a distinct cited hook |
 | Recover | n/a | `broaden_market` fired (kept < 3). Gemini **429 → fallback `gemini-3.5-flash-lite`** |
 | Crustdata credits | 8.25 | 12.77 (14 cache hits / 6 paid calls) |
-| COGS / margin (deep, $12) | n/a | **$1.38 COGS, 88.5% gross margin** |
+| COGS / margin (deep, $12) | n/a | **$1.38 COGS, 88.5% gross margin** (this run: 12.77 credits × $0.10 + $0.10 LLM; the 12.12-credit baseline in unit-economics.md gives $1.31 / 89%) |
 | neatlogs trace | `<paste neatlogs trace link>` | `<paste neatlogs trace link>` |
 
 ## Failed actions and what the agent did
