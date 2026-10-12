@@ -2,6 +2,8 @@
 
 ## For judges
 
+▶️ **Demo video (1:42):** [https://youtu.be/pwV75xrBH1w](https://youtu.be/pwV75xrBH1w)
+
 **Hiring-signal scout** is for sales and recruiting reps who need to know *who is hiring right now, for what, and who owns the hire*. You give it a market ("Series A AI infra Bay Area") and a role ("backend engineer"). It returns companies with live openings, their decision-makers (LinkedIn), headcount and funding data, and a short first email per person. Every claim cites its Crustdata source, and a grounded-claims score is shown. It recovers on its own from LLM outages, empty searches and off-market results. A fresh deep report costs $1.31–$1.38 to make (measured 12.12–12.77 Crustdata credits × $0.10 + ~$0.10 LLM), sold at $12 (≈89% gross margin, cfo.ai-modelled). A standard report costs ~$0.13 and a fully cached rerun ~$0.10 (LLM only).
 
 ```mermaid

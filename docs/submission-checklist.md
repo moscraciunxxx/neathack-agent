@@ -14,12 +14,15 @@ Deadline: **Mon Oct 12, ~6:30–11:25 AM PDT**, submitted by quote-tweeting the 
 - [ ] Add the links/screenshots to README ("Proof" section)
 
 ## Demo video ≤ 3 min (20%)
-- [ ] Follow `docs/demo-script.md`; shows plan → tools → state → recover → verify
-- [ ] Says and shows **neatlogs, Entire and cfo.ai** explicitly
-- [ ] Length ≤ 3:00, no API keys visible, uploaded (X video or YouTube unlisted)
+- [x] Follow `docs/demo-script.md`; shows plan → tools → state → recover → verify
+- [x] Says and shows **neatlogs, Entire and cfo.ai** explicitly
+- [x] Length ≤ 3:00, no API keys visible, uploaded (X video or YouTube unlisted): https://youtu.be/pwV75xrBH1w
 
 ## Build in public (15%)
 - [ ] Posts 1–4 from `docs/build-in-public.md` published Sat/Sun/Mon with #neatHack (manually, by you)
+  - [x] Day 1 post
+  - [x] Day 2 post
+  - [ ] Mon pre-submission post
 
 ## Useful + original (10%)
 - [ ] README states the problem, who it's for (recruiters, SDRs, founders hiring), and the cost per report

@@ -2,6 +2,8 @@
 
 All numbers come from real runs on the user's Mac (files in `runs/`, not committed). Fill the `<paste …>` placeholders before submitting.
 
+**Demo video (1:42, unlisted):** [https://youtu.be/pwV75xrBH1w](https://youtu.be/pwV75xrBH1w)
+
 ## Before vs after
 
 | | **BEFORE** (a782dad era) | **AFTER** (a1e25ee) |
